@@ -1,0 +1,5 @@
+build/
+build-*/
+tests/firmware_compare/build/
+*.user
+.vs/

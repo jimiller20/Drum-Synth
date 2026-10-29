@@ -1,0 +1,13 @@
+name: build-vst3
+on: [push, workflow_dispatch]
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -B build -DFERRUM_LTO=OFF
+      - run: cmake --build build --config Release --target Ferrum8_VST3 --parallel
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Ferrum8-VST3-Windows
+          path: build/Ferrum8_artefacts/Release/VST3

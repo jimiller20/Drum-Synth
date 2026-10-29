@@ -1,0 +1,93 @@
+// Randomizer.h - patch and pattern randomisation.
+// Patches are drawn from per-instrument "recipes" written in LXR parameter units, so a random
+// kick is still a kick; "Chaos" ignores the recipes. Pattern randomisation picks rhythms that suit
+// each channel's sound (kick on downbeats, hats on eighths, euclidean percussion ...).
+// SPDX-License-Identifier: GPL-3.0-only
+#pragma once
+#include "../dsp/PatchParams.h"
+#include "Patterns.h"
+#include <random>
+
+namespace ferrum
+{
+enum class Flavor : int { Kick = 0, Tom, Perc, Zap, Snare, Clap, ClosedHat, OpenHat, Cymbal, Chaos, Count };
+extern const char* const kFlavorNames[(int) Flavor::Count];
+
+// rhythm styles for the beat generator
+enum class BeatStyle : int { Auto = 0, House, Breakbeat, DnB, Trap, Dembow, Electro, Footwork, Euclid, Glitch, Count };
+extern const char* const kBeatStyleNames[(int) BeatStyle::Count];
+// a character applied to every sound of a random kit so the eight sounds belong together
+enum class KitCharacter : int { Auto = 0, Clean, Analog, Gritty, LoFi, Metallic, Count };
+extern const char* const kKitCharacterNames[(int) KitCharacter::Count];
+extern const char* const kKeyNames[12];
+
+struct DiceSettings
+{
+    BeatStyle style = BeatStyle::Auto;
+    float density = 0.5f;       // sparse .. busy
+    float complexity = 0.5f;    // straight .. syncopated
+    float expression = 0.5f;    // how many ghosts / nudges / chance / rolls
+    float mutation = 0.35f;     // size of changes for variations and Evolve
+    KitCharacter character = KitCharacter::Auto;
+    int key = -1;               // -1 off, 0..11 = C..B: pitched drums snap to a minor pentatonic in that key
+    int evolve = 0;             // 0 off, 1 orbit (variations around the original), 2 drift (keeps wandering)
+    int evolveEvery = 2;        // pattern loops between changes
+    bool allPatterns = false;   // Beat button: false = selected pattern, true = A-L as a set of related patterns
+};
+using ChannelMask = std::array<bool, kNumChannels>; // true = leave this channel alone
+
+class Randomizer
+{
+public:
+    Randomizer();
+    explicit Randomizer (uint32_t seed) : rng (seed) {}
+
+    // routing (output, choke) and the LFO retrigger source are kept from 'current'
+    Patch patch (Flavor f, const Patch& current);
+    Patch patchForModel (const Patch& current);           // "Randomize Drum Patch": keeps the model
+    Patch alter (const Patch& p, float amount = 0.12f);    // "Alter Drum Patch"
+    static Flavor guessFlavor (const Patch& p);
+
+    void randomizePattern (PatternData& d, const std::array<Flavor, kNumChannels>& roles, int onlyChannel = -1);
+    void randomizeAccentsFills (PatternData& d, int onlyChannel = -1);
+    void alterPattern (PatternData& d, int onlyChannel = -1);
+    // expression lanes: role-aware ghosts / nudges / tone / chance / rolls on the existing hits
+    void randomizeExpression (PatternData& d, const std::array<Flavor, kNumChannels>& roles, int onlyChannel = -1);
+    // DnB / breakbeat ghost notes in the gaps of snare-like channels; returns how many were added
+    int addGhostNotes (PatternData& d, const std::array<Flavor, kNumChannels>& roles, int onlyChannel = -1);
+    // small random pushes of timing, tone, decay and ghost level ("happy accidents")
+    void grooveShake (PatternData& d, int onlyChannel = -1);
+
+    // ---- beat generator (style, density, complexity, expression) ---------------------------
+    void generateBeat (PatternData& d, const std::array<Flavor, kNumChannels>& roles, const DiceSettings& s,
+                       const ChannelMask& keep, bool mayChangeLength = true);
+    // A-L as a set: main, variation, fill, busier, breakdown, build-up, half-time, hat run, minimal,
+    // glitch, variation 2, transition. Locked channels keep their own steps in every pattern.
+    void generateSet (std::array<PatternData, kNumPatterns>& pats, const std::array<Flavor, kNumChannels>& roles,
+                      const DiceSettings& s, const ChannelMask& keep);
+    static const char* setSlotName (int pattern);
+    // small musical changes (add / drop / move hits, accents, expression); anchors stay put
+    void mutate (PatternData& d, const std::array<Flavor, kNumChannels>& roles, float amount, const ChannelMask& keep);
+    // one expression lane of one channel, role-aware
+    void randomizeExpressionLane (PatternData& d, int ch, Flavor role, int lane, float amount = 1.0f);
+
+    // ---- kit sounds ----------------------------------------------------------------------
+    Patch kitPatch (Flavor f, const Patch& current, const DiceSettings& s); // patch() + character + key
+    void applyCharacter (Patch& p, KitCharacter c);
+    static void tuneToKey (Patch& p, int key);
+
+    float uni (float a, float b) { return std::uniform_real_distribution<float> (a, b) (rng); }
+    int irange (int a, int b) { return std::uniform_int_distribution<int> (a, b) (rng); }
+    bool chance (float p) { return uni (0.f, 1.f) < p; }
+
+private:
+    void channelPattern (PatternData& d, int ch, Flavor role);
+    void channelExpression (PatternData& d, int ch, Flavor role, float amount);
+    void templateChannel (PatternData& d, int ch, Flavor role, const DiceSettings& s, int duplicate);
+    void euclidChannel (PatternData& d, int ch, Flavor role, const DiceSettings& s, int duplicate);
+    void glitchChannel (PatternData& d, int ch, Flavor role, const DiceSettings& s);
+    void densityAdjust (PatternData& d, int ch, Flavor role, const DiceSettings& s);
+    void styleExpression (PatternData& d, int ch, Flavor role, const DiceSettings& s, const std::array<Flavor, kNumChannels>& roles);
+    std::mt19937 rng;
+};
+} // namespace ferrum
