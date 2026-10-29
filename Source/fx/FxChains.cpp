@@ -99,17 +99,17 @@ const std::vector<Chain>& chains()
           [] (RackState::Bus& b)
           {
               b.dry = 1.f;
-              setSlot (at (b, 0, 0), Type::Echo, { { "Sync", 0, "1/8D" }, { "Feedback", 62 }, { "Tone", 2500 }, { "Mod", 30 }, { "Age", 40 },
+              setSlot (at (b, 0, 0), Type::Echo, { { "Sync", 0, "1/8D" }, { "Feedback", 62 }, { "Tone", 3200 }, { "Mod", 30 }, { "Age", 40 },
                                                    { "Ping-Pong", 0, "On" }, { "Mix", 100 } });
               setSlot (at (b, 0, 1), Type::Spring, { { "Decay", 2 }, { "Mix", 45 } });
-              b.lanes[0].level = dbToLin (-7.f);
+              b.lanes[0].level = dbToLin (-3.f);
           } },
         { "Spring Tank", "Spring reverb on a parallel lane: drip and boing for snares and percussion.", false,
           [] (RackState::Bus& b)
           {
               b.dry = 1.f;
               setSlot (at (b, 0, 0), Type::Spring, { { "Springs", 0, "2" }, { "Decay", 2.5f }, { "Drip", 60 }, { "Mix", 100 } });
-              b.lanes[0].level = dbToLin (-8.f);
+              b.lanes[0].level = dbToLin (-6.f);
           } },
         { "Big Hall", "A long hall on a parallel lane, with pre-delay to keep the transients clear.", false,
           [] (RackState::Bus& b)
@@ -117,7 +117,7 @@ const std::vector<Chain>& chains()
               b.dry = 1.f;
               setSlot (at (b, 0, 0), Type::Utility, { { "Low Cut", 180 } });
               setSlot (at (b, 0, 1), Type::Reverb, { { "Type", 0, "Hall" }, { "Size", 80 }, { "Decay", 3.5f }, { "Pre-delay", 25 }, { "Mix", 100 } });
-              b.lanes[0].level = dbToLin (-10.f);
+              b.lanes[0].level = dbToLin (-9.f);
           } },
         { "Ensemble Wash", "Three-voice ensemble chorus into a plate: wide, shimmering hats and cymbals.", false,
           [] (RackState::Bus& b)
@@ -253,7 +253,7 @@ RackState::Bus randomChain (uint32_t seed, bool master, int kind)
             else if (d.chance (0.5f)) roll (d, at (b, 0, 1), tone, true);
             b.lanes[0].level = dbToLin (d.uni (-12.f, -4.f));
             roll (d, at (b, 1, 0), space, true);
-            b.lanes[1].level = dbToLin (d.uni (-16.f, -8.f));
+            b.lanes[1].level = dbToLin (d.uni (-14.f, -6.f));
             break;
         }
         default: // space send: (tone) -> space, wet on a lane under the dry signal
@@ -263,7 +263,7 @@ RackState::Bus randomChain (uint32_t seed, bool master, int kind)
             if (d.chance (0.5f)) roll (d, at (b, 0, s++), d.from ({ Type::Ladder, Type::Utility, Type::Chorus }), true);
             roll (d, at (b, 0, s++), space, true);
             if (d.chance (0.4f)) roll (d, at (b, 0, s++), d.from ({ Type::Reverb, Type::Spring }), true);
-            b.lanes[0].level = dbToLin (d.uni (-12.f, -5.f));
+            b.lanes[0].level = dbToLin (d.uni (-11.f, -4.f));
             break;
         }
     }

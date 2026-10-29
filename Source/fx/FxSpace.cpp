@@ -165,7 +165,7 @@ public:
             static const float outR[N] = { 0.7f, 0.7f, -0.7f, 0.7f, 1.f, 1.f, -1.f, -1.f };
             float l = 0, r = 0;
             for (int k = 0; k < N; ++k) { l += outL[k] * tapOut[k]; r += outR[k] * tapOut[k]; }
-            l *= 0.35f; r *= 0.35f;
+            l *= 0.6f; r *= 0.6f; // about unity energy at 100 % wet
             const float mid = 0.5f * (l + r), side = 0.5f * (l - r) * width;
             L[i] += (mid + side - L[i]) * mixAmt;
             R[i] += (mid - side - R[i]) * mixAmt;
@@ -247,6 +247,7 @@ public:
             }
             float wl = outs[0], wr = count > 1 ? outs[1] : outs[0];
             if (count > 2) { wl += 0.6f * outs[2]; wr += 0.6f * outs[2]; }
+            wl *= 1.6f; wr *= 1.6f; // wet level comparable to the dry signal
             L[i] += (wl - L[i]) * mixAmt;
             R[i] += (wr - R[i]) * mixAmt;
         }
