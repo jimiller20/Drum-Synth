@@ -15,6 +15,22 @@ public:
     ~Knob() override;
     void bind (juce::RangedAudioParameter* p);
     juce::RangedAudioParameter* getParameter() const { return param; }
+
+    // Free mode: the knob edits a value that is not a host parameter (the FX rack modules).
+    // Values are normalised 0..1; get() is read again by refresh().
+    struct Free
+    {
+        juce::String name;
+        float def = 0.f;
+        std::function<float()> get;
+        std::function<void (float)> set;
+        std::function<juce::String (float)> text;
+        std::function<bool (const juce::String&, float&)> parse; // optional: typed value -> normalised
+    };
+    void bindFree (Free f);
+    void refresh();
+    bool isBound() const { return param != nullptr || free.set != nullptr; }
+
     void setLabel (const juce::String& l) { label = l; repaint(); }
     void setAccent (juce::Colour c) { accent = c; repaint(); }
     void setBipolar (bool b) { bipolar = b; repaint(); }
@@ -40,6 +56,7 @@ private:
 
     juce::RangedAudioParameter* param = nullptr;
     std::unique_ptr<juce::ParameterAttachment> att;
+    Free free;
     float norm = 0.f, dragStartNorm = 0.f, accumDrag = 0.f;
     int lastY = 0;
     bool dragging = false, hover = false, bipolar = false, inactive = false;
@@ -56,6 +73,9 @@ public:
     ~ChoiceBox() override;
     void bind (juce::RangedAudioParameter* p);
     juce::RangedAudioParameter* getParameter() const { return param; }
+    // free mode: a list that is not a host parameter (setIndex() updates the display)
+    void bindFree (const juce::String& name, const juce::StringArray& choices, int index);
+    void setIndex (int i) { index = i; repaint(); }
     void setLabel (const juce::String& l) { label = l; repaint(); }
     void setStyle (Style s) { style = s; repaint(); }
     void setAccent (juce::Colour c) { accent = c; repaint(); }
@@ -72,8 +92,11 @@ public:
 
 private:
     void choose (int idx);
+    juce::StringArray names() const;
     juce::RangedAudioParameter* param = nullptr;
     std::unique_ptr<juce::ParameterAttachment> att;
+    juce::String freeName;
+    juce::StringArray freeChoices;
     int index = 0, dragStartIndex = 0;
     bool dragged = false, inactive = false;
     float wheelAccum = 0.f;
@@ -89,6 +112,8 @@ public:
     Segmented();
     ~Segmented() override;
     void bind (juce::RangedAudioParameter* p, juce::StringArray displayNames = {});
+    void bindFree (const juce::StringArray& options, int index);   // not a host parameter: use onUserChoice
+    void setIndex (int i) { index = i; repaint(); }
     void setAccent (juce::Colour c) { accent = c; repaint(); }
     void setLabel (const juce::String& l) { label = l; repaint(); }
     void setVertical (bool v) { vertical = v; repaint(); }
@@ -104,7 +129,7 @@ private:
     std::unique_ptr<juce::ParameterAttachment> att;
     juce::StringArray names;
     int index = 0;
-    bool vertical = false;
+    bool vertical = false, isFree = false;
     juce::String label;
     juce::Colour accent = col::accent;
 };

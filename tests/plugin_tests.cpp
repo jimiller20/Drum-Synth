@@ -3,8 +3,11 @@
 #include "../Source/PluginProcessor.h"
 #include "../Source/PluginEditor.h"
 #include "../Source/ui/DicePanel.h"
+#include "../Source/fx/FxChains.h"
 #include <cstdio>
+#include <complex>
 #include <functional>
+#include <set>
 
 using namespace juce;
 using namespace ferrum;
@@ -64,7 +67,7 @@ int main (int argc, char** argv)
     auto proc = std::make_unique<Ferrum8Processor>();
     proc->setRateAndBufferSizeDetails (48000, 512);
     proc->prepareToPlay (48000, 512);
-    CHECK (proc->getParameters().size() == 8 * NUM_PATCH_PARAMS + 27, "parameter count");
+    CHECK (proc->getParameters().size() == 8 * NUM_PATCH_PARAMS + 16, "parameter count");
 
     // MIDI note C1 triggers channel 1
     {
@@ -397,6 +400,402 @@ int main (int argc, char** argv)
         dp.setLookAndFeel (nullptr);
     }
 
+
+    // ---- sound dice: morph ends, genres, curated cymbals, per-hit variation on metals --------
+    {
+        auto p = std::make_unique<Ferrum8Processor>();
+        p->setRateAndBufferSizeDetails (48000, 512);
+        p->prepareToPlay (48000, 512);
+        auto same = [] (const Patch& a, const Patch& b) { for (int i = 0; i < NUM_PATCH_PARAMS; ++i) if (std::abs (a[(size_t) i] - b[(size_t) i]) > 1e-6f) return false; return true; };
+        const int ch = 4; // the cymbal channel of the init kit
+        const Patch a0 = p->getEndA (ch), b0 = p->getEndB (ch);
+        p->setParamValue ("morph", 0.f); runBlocks (*p, 2, nullptr);
+        Randomizer r (5);
+        const int e1 = p->setPatchAtActiveEnd (ch, r.cymbal (CymbalType::Ride, p->getActiveEnd (ch)));
+        CHECK (e1 == 0 && ! same (p->getEndA (ch), a0) && same (p->getEndB (ch), b0), "morph at A: a channel's dice change only end A");
+        p->setParamValue ("morph", 1.f); runBlocks (*p, 2, nullptr);
+        const Patch a1 = p->getEndA (ch);
+        const int e2 = p->setPatchAtActiveEnd (ch, r.cymbal (CymbalType::Crash, p->getActiveEnd (ch)));
+        CHECK (e2 == 1 && same (p->getEndA (ch), a1) && ! same (p->getEndB (ch), b0), "morph at B: a channel's dice change only end B");
+        const int e3 = p->setPatchAtActiveEnd (ch, r.patch (Flavor::Snare, p->getActiveEnd (ch)));
+        CHECK (e3 == 2 && choiceIndex (p->getEndA (ch)[P_MODEL], 4) == (int) Model::Snare && choiceIndex (p->getEndB (ch)[P_MODEL], 4) == (int) Model::Snare,
+               "a new voice model goes to both ends");
+        // Sounds roll at B keeps every A end of the same model
+        p->loadKit (factoryKits()[0]);
+        p->setParamValue ("morph", 1.f); runBlocks (*p, 2, nullptr);
+        std::array<Patch, 8> before;
+        for (int c = 0; c < 8; ++c) before[(size_t) c] = p->getEndA (c);
+        p->rollSounds();
+        int keptA = 0, changedB = 0;
+        auto sameMorphable = [] (const Patch& x, const Patch& y)
+        {
+            for (int i = 0; i < NUM_PATCH_PARAMS; ++i) if (paramDef (i).morphable && std::abs (x[(size_t) i] - y[(size_t) i]) > 1e-6f) return false;
+            return true;
+        };
+        for (int c = 0; c < 8; ++c)
+        {
+            if (sameMorphable (p->getEndA (c), before[(size_t) c])) ++keptA;
+            if (! same (p->getEndB (c), before[(size_t) c])) ++changedB;
+        }
+        std::printf ("     Sounds at B: %d A ends kept, %d B ends new\n", keptA, changedB);
+        CHECK (keptA == 8 && changedB == 8, "Sounds with the morph at B rolls the B ends and keeps A");
+        p->setParamValue ("morph", 0.f); runBlocks (*p, 2, nullptr);
+
+        // genres shape the recipes
+        auto stat = [&r] (Flavor f, Genre g, int param, bool wantMax)
+        {
+            float v = wantMax ? -1.f : 2.f;
+            for (int i = 0; i < 60; ++i)
+            {
+                const Patch q = r.patch (f, defaultPatch (Model::Drum), g);
+                v = wantMax ? std::max (v, q[(size_t) param]) : std::min (v, q[(size_t) param]);
+            }
+            return v * 127.f;
+        };
+        CHECK (stat (Flavor::Snare, Genre::DnB, P_OSC_COARSE, false) >= 54.9f && stat (Flavor::Snare, Genre::DnB, P_DECAY, true) <= 15.1f,
+               "Drum & Bass snares are high-tuned and tight");
+        CHECK (stat (Flavor::Kick, Genre::Trap, P_DECAY, false) >= 59.9f, "Trap kicks are long 808s");
+        CHECK (stat (Flavor::ClosedHat, Genre::LoFi, P_DECIMATE, true) <= 95.1f, "Lo-Fi hats are decimated");
+        {
+            DiceSettings d; d.style = BeatStyle::DnB;
+            bool dnbish = true;
+            for (int i = 0; i < 20; ++i) { const Genre g = r.genreFor (d); dnbish &= g == Genre::DnB || g == Genre::Jungle; }
+            d.genre = (int) Genre::Techno;
+            CHECK (dnbish && r.genreFor (d) == Genre::Techno, "the sound genre follows the beat style unless one is chosen");
+        }
+        // every genre x flavor plays and stays finite
+        {
+            bool ok = true;
+            for (int g = 0; g < (int) Genre::Count; ++g)
+                for (int f = 0; f < (int) Flavor::Chaos; ++f)
+                {
+                    const Patch q = r.patch ((Flavor) f, defaultPatch (Model::Drum), (Genre) g);
+                    Voice v; v.prepare (48000, 3);
+                    for (int i = 0; i < NUM_PATCH_PARAMS; ++i) v.setParam (i, q[(size_t) i]);
+                    v.trigger (1.f, 60);
+                    std::vector<float> x (48000);
+                    v.render (x.data(), (int) x.size());
+                    float pk = 0; for (float s2 : x) pk = std::max (pk, std::isfinite (s2) ? std::abs (s2) : 99.f);
+                    if (pk < 0.02f || pk > 1.5f) { ok = false; std::printf ("     %s %s peak %.3f\n", kGenreNames[g], kFlavorNames[f], pk); }
+                }
+            CHECK (ok, "every genre makes every kind of sound audible and in range");
+        }
+        // curated cymbals: no single whistling partial, no low mud
+        {
+            auto spectrum = [] (const std::vector<float>& x, double& domFrac, double& lowFrac)
+            {
+                const int N = 8192;
+                std::vector<std::complex<double>> a ((size_t) N);
+                for (int i = 0; i < N; ++i) a[(size_t) i] = (double) x[(size_t) i] * (0.5 - 0.5 * std::cos (2 * MathConstants<double>::pi * i / (N - 1)));
+                for (size_t i = 1, j = 0; i < (size_t) N; ++i) { size_t bit = (size_t) N >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit; if (i < j) std::swap (a[i], a[j]); }
+                for (size_t len = 2; len <= (size_t) N; len <<= 1)
+                {
+                    const double ang = -2 * MathConstants<double>::pi / (double) len;
+                    const std::complex<double> wl (std::cos (ang), std::sin (ang));
+                    for (size_t i = 0; i < (size_t) N; i += len)
+                    {
+                        std::complex<double> w (1);
+                        for (size_t j = 0; j < len / 2; ++j) { auto u = a[i + j], v = a[i + j + len / 2] * w; a[i + j] = u + v; a[i + j + len / 2] = u - v; w *= wl; }
+                    }
+                }
+                double all = 0, best = 0, low = 0, tot = 0; int imax = 0;
+                for (int i = 1; i < N / 2; ++i)
+                {
+                    const double f = i * 48000.0 / N, pw = std::norm (a[(size_t) i]);
+                    tot += pw; if (f < 400) low += pw;
+                    if (f >= 1000 && f <= 16000) { all += pw; if (pw > best) { best = pw; imax = i; } }
+                }
+                double around = 0; for (int i = std::max (1, imax - 8); i <= std::min (N / 2 - 1, imax + 8); ++i) around += std::norm (a[(size_t) i]);
+                domFrac = all > 0 ? around / all : 1; lowFrac = tot > 0 ? low / tot : 1;
+            };
+            bool clean = true;
+            for (int t = 0; t < (int) CymbalType::Count; ++t)
+            {
+                if ((CymbalType) t == CymbalType::Bell) continue; // a bell is meant to ring on a few partials
+                int whistles = 0;
+                for (int i = 0; i < 40; ++i)
+                {
+                    const Patch q = r.cymbal ((CymbalType) t, defaultPatch (Model::Cymbal));
+                    Voice v; v.prepare (48000, 9);
+                    for (int k = 0; k < NUM_PATCH_PARAMS; ++k) v.setParam (k, q[(size_t) k]);
+                    v.trigger (1.f, 60);
+                    std::vector<float> x (8192);
+                    v.render (x.data(), (int) x.size());
+                    double dom = 0, low = 0;
+                    spectrum (x, dom, low);
+                    if (dom > 0.4 || low > 0.02) ++whistles;
+                }
+                if (whistles > 2) { clean = false; std::printf ("     %s: %d of 40 whistle or rumble\n", kCymbalTypeNames[t], whistles); }
+            }
+            CHECK (clean, "curated cymbals have a dense metallic spectrum (no single whistling partial, no low rumble)");
+        }
+        // Vary on metals: the brightness of a cymbal changes from hit to hit (zero-crossing rate as a
+        // brightness measure, spread over 12 hits); the LXR's free-running carrier alone varies little
+        {
+            auto spread = [] (float vary)
+            {
+                Randomizer rr (11);
+                Patch q = rr.cymbal (CymbalType::Cymbal808, defaultPatch (Model::Cymbal));
+                q[P_VARIANCE] = vary;
+                Voice v; v.prepare (48000, 4);
+                for (int k = 0; k < NUM_PATCH_PARAMS; ++k) v.setParam (k, q[(size_t) k]);
+                std::vector<float> h (4096), gap (48000);
+                std::vector<double> z;
+                for (int hit = 0; hit < 12; ++hit)
+                {
+                    v.trigger (1.f, 60); v.render (h.data(), 4096);
+                    int zc = 0; for (int i = 1; i < 4096; ++i) zc += (h[(size_t) i] >= 0) != (h[(size_t) i - 1] >= 0);
+                    z.push_back (zc);
+                    for (int s2 = 0; s2 < 20 && ! v.isFinished(); ++s2) v.render (gap.data(), 48000);
+                }
+                double m = 0; for (double x : z) m += x; m /= (double) z.size();
+                double var = 0; for (double x : z) var += (x - m) * (x - m);
+                return std::sqrt (var / (double) z.size()) / m;
+            };
+            const double s0 = spread (0.f), s1 = spread (0.6f);
+            std::printf ("     cymbal brightness spread over 12 hits: vary 0 -> %.3f, vary 60%% -> %.3f\n", s0, s1);
+            CHECK (s1 > 2.0 * s0 && s1 > 0.02, "Vary changes the metal on every cymbal hit");
+        }
+    }
+
+    // ---- FX rack ---------------------------------------------------------------------------
+    {
+        namespace F = ferrum::fx;
+        auto noise = [] (std::vector<float>& L, std::vector<float>& R, int n, uint32_t seed)
+        {
+            L.resize ((size_t) n); R.resize ((size_t) n);
+            Random rnd ((int64) seed);
+            for (int i = 0; i < n; ++i)
+            {
+                const float env = std::exp (-(float) (i % 6000) / 1200.f); // drum-like bursts
+                L[(size_t) i] = (rnd.nextFloat() * 2.f - 1.f) * 0.5f * env;
+                R[(size_t) i] = (rnd.nextFloat() * 2.f - 1.f) * 0.5f * env;
+            }
+        };
+        auto runBus = [] (F::FxRack& r, int bus, std::vector<float> L, std::vector<float> R)
+        {
+            for (size_t i = 0; i < L.size(); i += 480) r.process (bus, L.data() + i, R.data() + i, (int) std::min<size_t> (480, L.size() - i));
+            return std::make_pair (L, R);
+        };
+        auto maxDiff = [] (const std::vector<float>& a, const std::vector<float>& b, size_t from = 0)
+        {
+            float d = 0; for (size_t i = from; i < a.size(); ++i) d = std::max (d, std::abs (a[i] - b[i])); return d;
+        };
+        auto rms = [] (const std::vector<float>& a, size_t from = 0)
+        {
+            double s = 0; for (size_t i = from; i < a.size(); ++i) s += (double) a[i] * a[i]; return (float) std::sqrt (s / (double) std::max<size_t> (1, a.size() - from));
+        };
+        std::vector<float> L, R;
+        noise (L, R, 48000, 7);
+        {
+            F::FxRack r; r.prepare (48000, 512);
+            const auto out = runBus (r, 0, L, R);
+            CHECK (maxDiff (out.first, L) == 0.f && maxDiff (out.second, R) == 0.f, "an empty bus passes its input through untouched");
+        }
+        {
+            F::FxRack r; r.prepare (48000, 512);
+            F::RackState st;
+            F::setSlot (st.buses[0].lanes[0].slots[0], F::Type::Utility, { { "Gain", 6 } });
+            F::setSlot (st.buses[0].lanes[0].slots[1], F::Type::Utility, { { "Gain", -6 } });
+            r.setState (st);
+            const auto out = runBus (r, 0, L, R);
+            CHECK (maxDiff (out.first, L, 4800) < 0.01f, "slots in a lane run in series (+6 dB then -6 dB = unity)");
+            st.buses[0].dry = 1.f;
+            F::setSlot (st.buses[0].lanes[0].slots[1], F::Type::None);
+            F::setSlot (st.buses[0].lanes[0].slots[0], F::Type::Utility, { { "Gain", 0 } });
+            F::setSlot (st.buses[0].lanes[1].slots[0], F::Type::Utility, { { "Gain", 0 } });
+            r.setState (st);
+            runBus (r, 0, L, R); // let the level smoothing settle
+            const auto par = runBus (r, 0, L, R);
+            CHECK (std::abs (rms (par.first, 4800) / rms (L, 4800) - 3.f) < 0.05f, "lanes run in parallel and sum with the dry signal (dry + 2 lanes = 3x)");
+            r.setLaneMute (0, 1, true);
+            runBus (r, 0, L, R);
+            const auto muted = runBus (r, 0, L, R);
+            CHECK (std::abs (rms (muted.first, 4800) / rms (L, 4800) - 2.f) < 0.05f, "a muted lane drops out of the mix");
+            r.setBypass (0, 0, 0, true);
+            r.setLaneMute (0, 1, false);
+            r.setDry (0, 0.f);
+            r.setLaneLevel (0, 1, 0.f);
+            runBus (r, 0, L, R);
+            const auto byp = runBus (r, 0, L, R);
+            std::printf ("     bypass: max difference %.5f (the bus DC blocker only)\n", maxDiff (byp.first, L, 4800));
+            CHECK (maxDiff (byp.first, L, 4800) < 0.01f, "a bypassed module passes the lane through");
+            r.collectGarbage();
+        }
+        // every module at three sample rates: finite, bounded, quiet afterwards
+        bool allFinite = true, allBounded = true, allSettle = true, allChange = true;
+        String bad;
+        for (double sr : { 44100.0, 48000.0, 96000.0 })
+            for (int t = 1; t < (int) F::Type::Count; ++t)
+            {
+                F::FxRack r; r.prepare (sr, 512);
+                F::RackState st;
+                F::setSlot (st.buses[0].lanes[0].slots[0], (F::Type) t);
+                r.setState (st);
+                std::vector<float> a, b;
+                noise (a, b, (int) sr, 3);
+                a.resize ((size_t) sr * 9, 0.f); b.resize ((size_t) sr * 9, 0.f); // 1 s of hits, then 8 s of silence
+                const auto out = runBus (r, 0, a, b);
+                float peak = 0, tail = 0;
+                for (size_t i = 0; i < out.first.size(); ++i)
+                {
+                    const float v = std::max (std::abs (out.first[i]), std::abs (out.second[i]));
+                    if (! std::isfinite (v)) allFinite = false;
+                    peak = std::max (peak, v);
+                    if (i > out.first.size() - (size_t) sr / 2) tail = std::max (tail, v);
+                }
+                const String name (F::info ((F::Type) t).name);
+                if (peak > 6.f) { allBounded = false; bad << name << " peak " << peak << "; "; }
+                if (tail > 0.003f) { allSettle = false; bad << name << " tail " << tail << "; "; }
+                if (maxDiff (out.first, a) < 1.0e-4f) { allChange = false; bad << name << " does nothing; "; }
+            }
+        CHECK (allFinite, "every FX module stays finite at 44.1, 48 and 96 kHz");
+        CHECK (allBounded, ("every FX module keeps its level in range " + bad).toRawUTF8());
+        CHECK (allSettle, ("every FX module falls silent after its input stops " + bad).toRawUTF8());
+        CHECK (allChange, ("every FX module changes the sound at its defaults " + bad).toRawUTF8());
+        {
+            // Ferric: the six preamps sound different, and feedback adds harmonics
+            std::vector<float> ref;
+            float minDiff = 1e9f;
+            for (int pre = 0; pre < 6; ++pre)
+            {
+                F::FxRack r; r.prepare (48000, 512);
+                F::RackState st;
+                F::setSlot (st.buses[0].lanes[0].slots[0], F::Type::Ferric, { { "Preamp", (float) pre }, { "Drive", 18 } });
+                r.setState (st);
+                const auto out = runBus (r, 0, L, R);
+                if (pre > 0) minDiff = std::min (minDiff, maxDiff (out.first, ref));
+                ref = out.first;
+            }
+            CHECK (minDiff > 0.01f, "Ferric's six preamps each sound different");
+        }
+        // chains and the chain dice
+        {
+            bool ok = true;
+            for (const auto& c : F::chains())
+            {
+                F::RackState st;
+                c.build (st.buses[0]);
+                int mods = 0;
+                for (auto& l : st.buses[0].lanes) for (auto& sl : l.slots) mods += sl.type != F::Type::None;
+                F::FxRack r; r.prepare (48000, 512); r.setState (st);
+                const auto out = runBus (r, 0, L, R);
+                float pk = 0; for (float v : out.first) pk = std::max (pk, std::isfinite (v) ? std::abs (v) : 99.f);
+                if (mods == 0 || pk > 4.f || pk < 0.01f) { ok = false; std::printf ("     chain %s: %d modules, peak %.3f\n", c.name, mods, pk); }
+            }
+            CHECK (ok, "every ready-made chain builds and plays at a sane level");
+            bool rolled = true;
+            std::set<String> distinct;
+            for (uint32_t seed = 1; seed <= 40; ++seed)
+            {
+                const auto b = F::randomChain (seed, seed % 5 == 0);
+                F::RackState st; st.buses[0] = b;
+                String sig;
+                for (auto& l : b.lanes) for (auto& sl : l.slots) if (sl.type != F::Type::None) sig << F::info (sl.type).id << ",";
+                distinct.insert (sig);
+                F::FxRack r; r.prepare (48000, 512); r.setState (st);
+                const auto out = runBus (r, 0, L, R);
+                float pk = 0; for (float v : out.first) pk = std::max (pk, std::isfinite (v) ? std::abs (v) : 99.f);
+                if (sig.isEmpty() || pk > 4.f || pk < 0.005f) { rolled = false; std::printf ("     seed %u: %s peak %.3f\n", seed, sig.toRawUTF8(), pk); }
+            }
+            CHECK (rolled, "rolled chains are never empty, silent or blown up");
+            CHECK (distinct.size() > 15, "rolled chains vary (more than 15 different chains in 40 rolls)");
+        }
+        // processor: routing to the buses, presets, legacy files
+        {
+            auto p = std::make_unique<Ferrum8Processor>();
+            p->setRateAndBufferSizeDetails (48000, 512);
+            p->prepareToPlay (48000, 512);
+            MidiBuffer m; m.addEvent (MidiMessage::noteOn (10, 36, (uint8) 127), 0);
+            AudioBuffer<float> dry (2, 512 * 30), wet (2, 512 * 30);
+            auto render = [&p, &m] (AudioBuffer<float>& out)
+            {
+                p->getEngine().reset();
+                AudioBuffer<float> buf (2, 512);
+                for (int b = 0; b < 30; ++b)
+                {
+                    buf.clear();
+                    MidiBuffer mm; if (b == 0) mm = m;
+                    p->processBlock (buf, mm);
+                    for (int c = 0; c < 2; ++c) out.copyFrom (c, b * 512, buf, c, 0, 512);
+                }
+            };
+            render (dry);
+            F::RackState st;
+            F::chains()[0].build (st.buses[0]); // Brut Crunch on FX 1
+            p->getRack().setState (st);
+            render (wet);
+            CHECK (dry.getMagnitude (0, 0, dry.getNumSamples()) > 0.05f, "kick plays");
+            float d = 0;
+            for (int i = 0; i < dry.getNumSamples(); ++i) d = std::max (d, std::abs (dry.getSample (0, i) - wet.getSample (0, i)));
+            CHECK (d == 0.f, "FX 1 does not touch a channel that plays on output A");
+            p->setPatchValue (0, P_OUTPUT, choiceValue (2, paramDef (P_OUTPUT).numChoices));
+            render (wet);
+            d = 0;
+            for (int i = 0; i < dry.getNumSamples(); ++i) d = std::max (d, std::abs (dry.getSample (0, i) - wet.getSample (0, i)));
+            CHECK (d > 0.02f, "a channel sent to FX 1 plays through its chain");
+            // master bus processes output A
+            F::RackState st2 = p->getRack().getState();
+            F::setSlot (st2.buses[F::kMasterBus].lanes[0].slots[0], F::Type::Utility, { { "Gain", -12 } });
+            p->getRack().setState (st2);
+            AudioBuffer<float> mast (2, 512 * 30);
+            render (mast);
+            render (mast);
+            const float ratio = mast.getRMSLevel (0, 2048, mast.getNumSamples() - 2048) / wet.getRMSLevel (0, 2048, wet.getNumSamples() - 2048);
+            std::printf ("     master -12 dB: level ratio %.3f\n", ratio);
+            CHECK (std::abs (ratio - 0.251f) < 0.03f, "the Master bus processes output A");
+            // preset round trip
+            const auto before = p->getRack().getState();
+            const auto tree = p->createPresetTree();
+            p->getRack().setState ({});
+            p->applyPresetTree (tree);
+            const auto after = p->getRack().getState();
+            bool same = true;
+            for (int b = 0; b < F::kBuses; ++b)
+                for (int l = 0; l < F::kLanes; ++l)
+                    for (int s2 = 0; s2 < F::kSlots; ++s2)
+                    {
+                        const auto& x = before.buses[(size_t) b].lanes[(size_t) l].slots[(size_t) s2];
+                        const auto& y = after.buses[(size_t) b].lanes[(size_t) l].slots[(size_t) s2];
+                        if (x.type != y.type || x.bypass != y.bypass) same = false;
+                        for (int i = 0; i < F::kMaxParams && x.type != F::Type::None; ++i)
+                            if (i < (int) F::info (x.type).params.size() && std::abs (x.p[i] - y.p[i]) > 1.0e-5f) same = false;
+                    }
+            CHECK (same, "the FX rack is saved and loaded with the preset");
+            MemoryBlock mb; p->getStateInformation (mb);
+            auto p2 = std::make_unique<Ferrum8Processor>();
+            p2->setStateInformation (mb.getData(), (int) mb.getSize());
+            CHECK (p2->getRack().moduleType (0, 0, 0) == F::Type::Ferric && p2->getRack().moduleType (F::kMasterBus, 0, 0) == F::Type::Utility
+                       && choiceIndex (p2->getPatchValue (0, P_OUTPUT), paramDef (P_OUTPUT).numChoices) == 2,
+                   "the host project restores the rack and the FX routing");
+            // a version-1 preset: single FX bus in GLOBALS, channel output "FX"
+            ValueTree old ("FERRUM8_PRESET");
+            old.setProperty ("version", 1, nullptr);
+            ValueTree glob ("GLOBALS");
+            glob.setProperty ("fxType", 4, nullptr); glob.setProperty ("fxMix", 0.4f, nullptr); glob.setProperty ("fxP1", 0.6f, nullptr);
+            glob.setProperty ("fxPingPong", 1.f, nullptr); glob.setProperty ("fxOut", 1, nullptr);
+            old.appendChild (glob, nullptr);
+            ValueTree chans ("CHANNELS");
+            ValueTree c0 ("FERRUM8_PATCH"); c0.setProperty ("index", 2, nullptr);
+            ValueTree a ("A"); a.setProperty ("output", "FX", nullptr); c0.appendChild (a, nullptr);
+            chans.appendChild (c0, nullptr);
+            old.appendChild (chans, nullptr);
+            p->applyPresetTree (old);
+            const auto& lin = F::info (F::Type::LxrDelay);
+            CHECK (p->getRack().moduleType (0, 0, 0) == F::Type::LxrDelay && p->getRack().output (0) == 1
+                       && std::abs (p->getRack().param (0, 0, 0, 5) - 0.4f) < 1e-5f
+                       && F::choiceIndex (lin.params[4], p->getRack().param (0, 0, 0, 4)) == 1
+                       && ! p->getRack().hasModules (F::kMasterBus),
+                   "an old preset's FX bus becomes FX 1 with the LXR delay");
+            CHECK (choiceIndex (p->getPatchValue (2, P_OUTPUT), paramDef (P_OUTPUT).numChoices) == 2, "an old patch's Output 'FX' becomes FX 1");
+            p->loadKit (factoryKits()[1]);
+            const bool k1 = p->getRack().moduleType (0, 0, 0) == F::Type::LxrDelay;
+            p->loadKit (factoryKits()[2]);
+            CHECK (k1 && p->getRack().moduleType (0, 0, 0) == F::Type::LxrDist, "factory kits bring their FX rack");
+            p->getRack().collectGarbage();
+        }
+    }
+
     // editor snapshots
     {
         proc->loadKit (factoryKits()[0]);
@@ -421,6 +820,40 @@ int main (int argc, char** argv)
         snapshot (*ed, outDir.getChildFile ("ui_jungle_nudge.png"));
         proc->matrixView = true; proc->sendUiChange(); pump (150);
         snapshot (*ed, outDir.getChildFile ("ui_jungle_matrix.png"));
+        {
+            // the FX tab: Brut Crunch on FX 1 (snare + clap), Dirt + Space on FX 2 (cymbal), Drum Bus on the master
+            namespace F = ferrum::fx;
+            F::RackState st;
+            for (const auto& c : F::chains())
+            {
+                if (String (c.name) == "Brut Crunch") c.build (st.buses[0]);
+                if (String (c.name) == "Dirt + Space") c.build (st.buses[1]);
+                if (String (c.name) == "Drum Bus") c.build (st.buses[2]);
+            }
+            F::setSlot (st.buses[0].lanes[0].slots[1], F::Type::Cabinet);
+            proc->getRack().setState (st);
+            const int nOut = paramDef (P_OUTPUT).numChoices;
+            proc->setPatchValue (3, P_OUTPUT, choiceValue (2, nOut));
+            proc->setPatchValue (7, P_OUTPUT, choiceValue (2, nOut));
+            proc->setPatchValue (4, P_OUTPUT, choiceValue (3, nOut));
+            proc->matrixView = false; proc->sendUiChange(); pump (100);
+            if (auto* fe = dynamic_cast<Ferrum8Editor*> (ed.get()))
+            {
+                fe->getFxPanel().showBus (0);
+                fe->setTab (1);
+                pump (150);
+                snapshot (*ed, outDir.getChildFile ("ui_fx_bus1.png"));
+                fe->getFxPanel().showBus (1);
+                pump (100);
+                snapshot (*ed, outDir.getChildFile ("ui_fx_bus2.png"));
+                fe->getFxPanel().showBus (2);
+                pump (100);
+                snapshot (*ed, outDir.getChildFile ("ui_fx_master.png"));
+                fe->setTab (0);
+                pump (100);
+                snapshot (*ed, outDir.getChildFile ("ui_fx_overview.png"));
+            }
+        }
         ed.reset();
     }
     std::printf ("%s (%d failures)\n", failures ? "FAILED" : "ALL PASSED", failures);

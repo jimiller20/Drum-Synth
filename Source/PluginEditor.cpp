@@ -7,13 +7,21 @@ using namespace juce;
 using namespace ferrum;
 
 Ferrum8Editor::Ferrum8Editor (Ferrum8Processor& p)
-    : AudioProcessorEditor (&p), proc (p), toolbar (p), channels (p), patch (p), pattern (p), global (p)
+    : AudioProcessorEditor (&p), proc (p), toolbar (p), channels (p), patch (p), pattern (p), global (p), fxPanel (p)
 {
     setLookAndFeel (&lnf);
     LookAndFeel::setDefaultLookAndFeel (&lnf);
     addAndMakeVisible (content);
-    content.onPaint = [this] (Graphics& g) { drawStatus (g); };
-    for (auto* c : std::initializer_list<Component*> { &toolbar, &channels, &patch, &pattern, &global }) content.addAndMakeVisible (c);
+    content.onPaint = [this] (Graphics& g) { drawTabs (g); drawStatus (g); };
+    for (auto* c : std::initializer_list<Component*> { &toolbar, &channels, &patch, &pattern, &global, &drumsTab, &fxTab })
+        content.addAndMakeVisible (c);
+    content.addChildComponent (fxPanel);
+    drumsTab.setTooltip ("Drum patches and patterns (Tab switches)");
+    fxTab.setTooltip ("The FX rack: FX 1, FX 2 and Master buses, lanes in parallel, slots in series (Tab switches)");
+    drumsTab.onClick = [this] { setTab (0); };
+    fxTab.onClick = [this] { setTab (1); };
+    fxPanel.showStatus = [this] (const String& s) { status (s); };
+    global.onOpenFx = [this] (int b) { fxPanel.showBus (b); setTab (1); };
 
     toolbar.mainMenuBtn.onClick = [this] { showMainMenu (ModifierKeys::currentModifiers.isShiftDown()); };
     toolbar.soundsBtn.onClick = [this] { status (proc.rollSounds()); selectChannel (proc.editorChannel); };
@@ -36,6 +44,7 @@ Ferrum8Editor::Ferrum8Editor (Ferrum8Processor& p)
 
     proc.uiChanges.addChangeListener (this);
     selectChannel (proc.editorChannel);
+    setTab (0);
 
     float z = 1.0f;
     if (auto* d = Desktop::getInstance().getDisplays().getPrimaryDisplay())
@@ -71,10 +80,14 @@ void Ferrum8Editor::resized()
     content.setTransform (AffineTransform::scale (zoom));
     toolbar.setBounds (0, 0, kDesignW, 50);
     channels.setBounds (0, 50, kDesignW, 64);
-    patch.setBounds (0, 114, kDesignW, 354);
-    pattern.setBounds (0, 468, kDesignW, 236);
-    global.setBounds (0, 704, kDesignW, 112);
-    statusArea = { 0, 816, kDesignW, 32 };
+    tabArea = { 0, 114, kDesignW, 34 };
+    drumsTab.setBounds (12, 118, 118, 26);
+    fxTab.setBounds (134, 118, 118, 26);
+    patch.setBounds (0, 148, kDesignW, 354);
+    pattern.setBounds (0, 502, kDesignW, 236);
+    fxPanel.setBounds (0, 148, kDesignW, 590);
+    global.setBounds (0, 738, kDesignW, 112);
+    statusArea = { 0, 850, kDesignW, 32 };
     content.repaint();
 }
 
@@ -84,6 +97,7 @@ void Ferrum8Editor::timerCallback()
     channels.tick();
     pattern.tick();
     global.tick();
+    if (tab == 1) fxPanel.tick();
     if (statusTimer > 0 && --statusTimer == 0) statusText.clear();
     static int frame = 0;
     if ((++frame % 10) == 0) content.repaint (statusArea);
@@ -95,6 +109,9 @@ void Ferrum8Editor::changeListenerCallback (ChangeBroadcaster*)
     toolbar.refresh();
     channels.repaint();
     pattern.repaint();
+    fxPanel.refresh();
+    global.repaint();
+    content.repaint (tabArea);
     if (patch.getChannel() != proc.editorChannel) selectChannel (proc.editorChannel);
     pattern.setMatrix (proc.matrixView);
 }
@@ -110,6 +127,50 @@ void Ferrum8Editor::selectChannel (int ch)
 void Ferrum8Editor::preview (int ch, bool accent)
 {
     proc.getEngine().previewTrigger (ch, accent ? 1.0f : 64.f / 127.f);
+}
+
+void Ferrum8Editor::setTab (int t)
+{
+    tab = jlimit (0, 1, t);
+    patch.setVisible (tab == 0);
+    pattern.setVisible (tab == 0);
+    fxPanel.setVisible (tab == 1);
+    if (tab == 1) fxPanel.refresh();
+    drumsTab.setToggleState (tab == 0, dontSendNotification);
+    fxTab.setToggleState (tab == 1, dontSendNotification);
+    content.repaint (tabArea);
+}
+
+void Ferrum8Editor::drawTabs (Graphics& g)
+{
+    g.setColour (ui::col::bg);
+    g.fillRect (tabArea);
+    g.setColour (ui::col::line);
+    g.drawHorizontalLine (tabArea.getBottom() - 1, 0.f, (float) kDesignW);
+    // routing summary: which channels play through which bus
+    auto& rack = proc.getRack();
+    const int n = paramDef (P_OUTPUT).numChoices;
+    String text;
+    for (int b = 0; b < fx::kBuses; ++b)
+    {
+        StringArray chans, mods;
+        if (b != fx::kMasterBus)
+            for (int ch = 0; ch < Ferrum8Processor::NC; ++ch)
+                if (choiceIndex (proc.getPatchValue (ch, P_OUTPUT), n) == b + 2) chans.add (String (ch + 1));
+        for (int l = 0; l < fx::kLanes; ++l)
+            for (int s = 0; s < fx::kSlots; ++s)
+                if (rack.moduleType (b, l, s) != fx::Type::None) mods.add (fx::info (rack.moduleType (b, l, s)).name);
+        if (b == fx::kMasterBus && mods.isEmpty()) continue;
+        if (b != fx::kMasterBus && chans.isEmpty() && mods.isEmpty()) continue;
+        if (text.isNotEmpty()) text << "     ";
+        text << String (fx::busName (b)).toUpperCase() << ": ";
+        if (b != fx::kMasterBus) text << (chans.isEmpty() ? String ("no channels") : "ch " + chans.joinIntoString (" ")) << "  >  ";
+        text << (mods.isEmpty() ? String ("dry") : mods.joinIntoString (" > "));
+    }
+    g.setFont (ui::font (14.f));
+    g.setColour (ui::col::dim);
+    g.drawFittedText (text.isEmpty() ? String ("No effects: set a channel's Output to FX 1 or FX 2, or open the FX RACK tab") : text,
+                      tabArea.withTrimmedLeft (270).withTrimmedRight (14), Justification::centredRight, 1, 0.8f);
 }
 
 void Ferrum8Editor::drawStatus (Graphics& g)
@@ -131,7 +192,7 @@ void Ferrum8Editor::drawStatus (Graphics& g)
     else
     {
         g.setColour (ui::col::faint);
-        g.drawText ("Drag knobs (Shift = fine)  |  Ctrl-click resets  |  right-click to type a value  |  click a selected channel to audition  |  keys 1-8, a-l, P, S",
+        g.drawText ("Drag knobs (Shift = fine)  |  Ctrl-click resets  |  right-click to type a value  |  click a selected channel to audition  |  keys 1-8, a-l, P, S, Tab",
                     r, Justification::centredLeft);
     }
 }
@@ -300,8 +361,8 @@ void Ferrum8Editor::runMainMenuItem (int id)
         }
         case 12:
             proc.pushUndo();
-            for (int ch = 0; ch < 8; ++ch) proc.setPatch (ch, proc.randomizer.alter (proc.getCurrentPatch (ch)), true);
-            status ("Altered all drum patches (Shift-click the menu to repeat)");
+            for (int ch = 0; ch < 8; ++ch) proc.setPatchAtActiveEnd (ch, proc.randomizer.alter (proc.getActiveEnd (ch)));
+            status ("Altered all drum patches on morph end " + Ferrum8Processor::endName (proc.activeEnd()) + " (Shift-click the menu to repeat)");
             break;
         case 13: randomizeAll(); break;
         case 40: status (proc.rollSounds()); selectChannel (proc.editorChannel); break;
@@ -442,9 +503,10 @@ void Ferrum8Editor::showChannelMenu (int ch)
             case 5:
             {
                 proc.pushUndo();
-                const Patch p = proc.randomizer.patchForModel (proc.getCurrentPatch (ch));
-                proc.setPatch (ch, p, true);
+                const Patch p = proc.randomizer.patchForModel (proc.getActiveEnd (ch), proc.randomizer.genreFor (proc.dice));
+                const int end = proc.setPatchAtActiveEnd (ch, p);
                 proc.setChannelName (ch, String ("Rnd ") + kFlavorNames[(int) Randomizer::guessFlavor (p)]);
+                status ("New sound on channel " + String (ch + 1) + "  (morph end " + Ferrum8Processor::endName (end) + ")");
                 break;
             }
             case 6: pattern.runMenuItem (12, true); break;
@@ -532,6 +594,7 @@ bool Ferrum8Editor::keyPressed (const KeyPress& k)
         }
     }
     if (cmd && mods.isShiftDown() && code == 'Z') { proc.redo(); return true; }
+    if (k == KeyPress::tabKey) { setTab (tab == 0 ? 1 : 0); return true; }
     if (code >= '1' && code <= '8')
     {
         const int ch = code - '1';

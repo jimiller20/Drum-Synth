@@ -7,9 +7,6 @@ using namespace ferrum;
 
 static const char* const kPatternNames[12] = { "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L" };
 static const juce::StringArray kRateNames { "1/8", "1/8T", "1/16", "1/16T", "1/32" };
-static const juce::StringArray kFxTypeNames { "Off", "Distortion", "Ring Mod", "Compressor", "Delay" };
-static const juce::StringArray kDistNames { "Tube", "Fold", "Rat" };
-static const juce::StringArray kRatioNames { "1:1", "2:1", "3:1", "4:1", "6:1", "8:1" };
 
 //==============================================================================================
 juce::String Ferrum8Processor::patchParamId (int ch, int p) { return "c" + juce::String (ch + 1) + "_" + paramDef (p).id; }
@@ -60,18 +57,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout Ferrum8Processor::createLayo
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "morph", 1 }, "Sound Morph", NormalisableRange<float> (0.f, 1.f), 0.f, pct));
     for (int ch = 0; ch < NC; ++ch)
         layout.add (std::make_unique<AudioParameterBool> (ParameterID { "mute" + String (ch + 1), 1 }, "Mute " + String (ch + 1), false));
-    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { "fxType", 1 }, "FX Type", kFxTypeNames, 0));
-    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "fxMix", 1 }, "FX Dry/Wet", NormalisableRange<float> (0.f, 1.f), 0.5f, pct));
-    for (int i = 0; i < 4; ++i)
-        layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "fxP" + String (i + 1), 1 }, "FX Param " + String (i + 1), NormalisableRange<float> (0.f, 1.f), 0.5f, pct));
-    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { "fxDist", 1 }, "FX Distortion Type", kDistNames, 0));
-    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { "fxRatio", 1 }, "FX Comp Ratio", kRatioNames, 2));
-    {
-        StringArray w; for (auto* n : kWaveNames) w.add (n);
-        layout.add (std::make_unique<AudioParameterChoice> (ParameterID { "fxWave", 1 }, "FX Ring Wave", w, 3));
-    }
-    layout.add (std::make_unique<AudioParameterBool> (ParameterID { "fxPingPong", 1 }, "FX Ping-Pong", false));
-    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { "fxOut", 1 }, "FX Output", StringArray { "A", "B" }, 0));
     return layout;
 }
 
@@ -97,14 +82,6 @@ Ferrum8Processor::Ferrum8Processor()
     pMaster = apvts.getRawParameterValue ("master");
     pTempo = apvts.getRawParameterValue ("tempo");
     pMorph = apvts.getRawParameterValue ("morph");
-    pFxType = apvts.getRawParameterValue ("fxType");
-    pFxMix = apvts.getRawParameterValue ("fxMix");
-    for (int i = 0; i < 4; ++i) pFxP[(size_t) i] = apvts.getRawParameterValue ("fxP" + juce::String (i + 1));
-    pFxDist = apvts.getRawParameterValue ("fxDist");
-    pFxRatio = apvts.getRawParameterValue ("fxRatio");
-    pFxWave = apvts.getRawParameterValue ("fxWave");
-    pFxPing = apvts.getRawParameterValue ("fxPingPong");
-    pFxOut = apvts.getRawParameterValue ("fxOut");
     for (int ch = 0; ch < NC; ++ch) pMute[(size_t) ch] = apvts.getRawParameterValue ("mute" + juce::String (ch + 1));
 
     loadKit (initKit());
@@ -192,6 +169,30 @@ void Ferrum8Processor::setPatch (int ch, const Patch& in, bool alsoMorphTarget, 
     }
     presetDirty = true;
     sendUiChange();
+}
+
+int Ferrum8Processor::setPatchAtActiveEnd (int ch, const Patch& in)
+{
+    const int end = activeEnd();
+    const Patch other = end == 0 ? getEndB (ch) : getEndA (ch);
+    if (choiceIndex (other[P_MODEL], 4) != choiceIndex (in[P_MODEL], 4)) { setPatch (ch, in, true); return 2; }
+    {
+        const juce::ScopedLock sl (stateLock);
+        auto& c = chans[(size_t) ch];
+        (end == 0 ? c.a : c.b) = in;
+        for (int i = 0; i < NP; ++i)
+            if (! paramDef (i).morphable) c.a[(size_t) i] = c.b[(size_t) i] = in[(size_t) i];
+    }
+    const float m = getMorph();
+    for (int i = 0; i < NP; ++i)
+    {
+        const auto& c = chans[(size_t) ch];
+        setParamFromPatchValue (ch, i, morphValue (i, c.a[(size_t) i], c.b[(size_t) i], m));
+        lastSeen[(size_t) ch][(size_t) i] = getPatchValue (ch, i);
+    }
+    presetDirty = true;
+    sendUiChange();
+    return end;
 }
 
 void Ferrum8Processor::setMorphTarget (int ch, const Patch& b)
@@ -284,6 +285,7 @@ void Ferrum8Processor::timerCallback()
 {
     pollMorph();
     evolveTick();
+    engine.rack.collectGarbage(); // modules replaced on the audio thread are deleted here
     const int playReq = engine.uiPlayRequest.exchange (0);
     if (playReq != 0) setParamValue ("play", playReq > 0 ? 1.f : 0.f);
     const int patReq = engine.uiPatternRequest.exchange (-1);
@@ -346,14 +348,6 @@ void Ferrum8Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
     g.master = db <= -59.9f ? 0.f : juce::Decibels::decibelsToGain (db);
     g.tempo = pTempo->load();
     for (int ch = 0; ch < NC; ++ch) g.mutes[ch] = pMute[(size_t) ch]->load() > 0.5f;
-    g.fx.type = (FxType) juce::jlimit (0, 4, (int) pFxType->load());
-    g.fx.dryWet = pFxMix->load();
-    for (int i = 0; i < 4; ++i) g.fx.p[i] = pFxP[(size_t) i]->load();
-    g.fx.distType = (DistType) juce::jlimit (0, 2, (int) pFxDist->load());
-    g.fx.ratio = (int) pFxRatio->load();
-    g.fx.ringWave = (int) pFxWave->load();
-    g.fx.pingPong = pFxPing->load() > 0.5f;
-    g.fxOutput = (int) pFxOut->load();
     engine.setGlobals (g);
     engine.setMidiConfig (getMidiConfig());
 
@@ -451,6 +445,118 @@ static void exprFromHex (PatternData& d, int lane, const juce::String& s)
             d.expr[(size_t) c][(size_t) lane][(size_t) st] = (int8_t) (uint8_t) s.substring (i, i + 2).getHexValue32();
         }
 }
+//== FX rack <-> ValueTree. Parameters are stored by name (choices by their label), so modules can
+// gain parameters later without breaking files.
+static juce::String rackKey (const char* paramName)
+{
+    juce::String k ("p_");
+    for (auto c : juce::String (paramName)) if (juce::CharacterFunctions::isLetterOrDigit (c)) k << juce::String::charToString (c);
+    return k;
+}
+static juce::ValueTree rackToTree (const fx::RackState& st)
+{
+    juce::ValueTree t ("FXRACK");
+    t.setProperty ("version", 1, nullptr);
+    for (int b = 0; b < fx::kBuses; ++b)
+    {
+        const auto& bus = st.buses[(size_t) b];
+        juce::ValueTree bt ("BUS");
+        bt.setProperty ("index", b, nullptr);
+        bt.setProperty ("dry", bus.dry, nullptr);
+        bt.setProperty ("outDb", bus.outDb, nullptr);
+        bt.setProperty ("output", bus.output == 1 ? "B" : "A", nullptr);
+        for (int l = 0; l < fx::kLanes; ++l)
+        {
+            const auto& lane = bus.lanes[(size_t) l];
+            juce::ValueTree lt ("LANE");
+            lt.setProperty ("index", l, nullptr);
+            lt.setProperty ("level", lane.level, nullptr);
+            lt.setProperty ("mute", lane.mute, nullptr);
+            for (int s = 0; s < fx::kSlots; ++s)
+            {
+                const auto& slot = lane.slots[(size_t) s];
+                if (slot.type == fx::Type::None) continue;
+                const auto& in = fx::info (slot.type);
+                juce::ValueTree stt ("SLOT");
+                stt.setProperty ("index", s, nullptr);
+                stt.setProperty ("type", in.id, nullptr);
+                stt.setProperty ("bypass", slot.bypass, nullptr);
+                for (size_t i = 0; i < in.params.size(); ++i)
+                {
+                    const auto& ps = in.params[i];
+                    if (ps.scale == fx::Scale::Choice) stt.setProperty (rackKey (ps.name), ps.choices[(size_t) fx::choiceIndex (ps, slot.p[i])], nullptr);
+                    else stt.setProperty (rackKey (ps.name), slot.p[i], nullptr);
+                }
+                lt.appendChild (stt, nullptr);
+            }
+            bt.appendChild (lt, nullptr);
+        }
+        t.appendChild (bt, nullptr);
+    }
+    return t;
+}
+static fx::RackState treeToRack (const juce::ValueTree& t)
+{
+    fx::RackState st;
+    for (const auto bt : t)
+    {
+        if (! bt.hasType ("BUS")) continue;
+        const int b = (int) bt.getProperty ("index", -1);
+        if (b < 0 || b >= fx::kBuses) continue;
+        auto& bus = st.buses[(size_t) b];
+        bus.dry = juce::jlimit (0.f, 1.f, (float) bt.getProperty ("dry", 0.f));
+        bus.outDb = juce::jlimit (-24.f, 12.f, (float) bt.getProperty ("outDb", 0.f));
+        bus.output = bt.getProperty ("output", "A").toString() == "B" ? 1 : 0;
+        for (const auto lt : bt)
+        {
+            const int l = (int) lt.getProperty ("index", -1);
+            if (l < 0 || l >= fx::kLanes) continue;
+            auto& lane = bus.lanes[(size_t) l];
+            lane.level = juce::jlimit (0.f, 2.f, (float) lt.getProperty ("level", 1.f));
+            lane.mute = (bool) lt.getProperty ("mute", false);
+            for (const auto stt : lt)
+            {
+                const int s = (int) stt.getProperty ("index", -1);
+                const auto type = fx::typeFromId (stt.getProperty ("type", "").toString().toStdString());
+                if (s < 0 || s >= fx::kSlots || type == fx::Type::None) continue;
+                auto& slot = lane.slots[(size_t) s];
+                const auto& in = fx::info (type);
+                slot.type = type;
+                slot.bypass = (bool) stt.getProperty ("bypass", false);
+                for (size_t i = 0; i < in.params.size(); ++i)
+                {
+                    const auto& ps = in.params[i];
+                    slot.p[i] = ps.def;
+                    const auto key = rackKey (ps.name);
+                    if (! stt.hasProperty (key)) continue;
+                    if (ps.scale == fx::Scale::Choice)
+                    {
+                        const auto name = stt.getProperty (key).toString();
+                        for (size_t k = 0; k < ps.choices.size(); ++k)
+                            if (name == ps.choices[k]) slot.p[i] = fx::choiceNorm (ps, (int) k);
+                    }
+                    else slot.p[i] = juce::jlimit (0.f, 1.f, (float) stt.getProperty (key));
+                }
+            }
+        }
+    }
+    return st;
+}
+// the single FX bus of earlier versions, as stored in a preset's GLOBALS
+static std::optional<fx::RackState> legacyRack (const juce::ValueTree& glob)
+{
+    if (! glob.isValid() || ! glob.hasProperty ("fxType")) return std::nullopt;
+    FxSettings fs;
+    fs.type = (FxType) juce::jlimit (0, 4, (int) glob["fxType"]);
+    fs.dryWet = (float) glob.getProperty ("fxMix", 0.5f);
+    for (int i = 0; i < 4; ++i) fs.p[i] = (float) glob.getProperty ("fxP" + juce::String (i + 1), 0.5f);
+    fs.distType = (DistType) juce::jlimit (0, 2, (int) glob.getProperty ("fxDist", 0));
+    fs.ratio = juce::jlimit (0, 5, (int) glob.getProperty ("fxRatio", 2));
+    fs.ringWave = (int) glob.getProperty ("fxWave", 3);
+    fs.pingPong = (float) glob.getProperty ("fxPingPong", 0.f) > 0.5f;
+    return fx::FxRack::fromLegacy (fs, (int) glob.getProperty ("fxOut", 0));
+}
+
 static juce::ValueTree patchToTree (const juce::Identifier& type, const Patch& p)
 {
     juce::ValueTree t (type);
@@ -474,6 +580,7 @@ static Patch treeToPatch (const juce::ValueTree& t, const Patch& fallback)
         {
             const juce::String s = v.toString();
             for (int k = 0; k < d.numChoices; ++k) if (s == d.choices[k]) p[(size_t) i] = choiceValue (k, d.numChoices);
+            if (i == P_OUTPUT && s == "FX") p[(size_t) i] = choiceValue (2, d.numChoices); // the single FX bus of version 1
         }
         else p[(size_t) i] = lxr::clamp01 ((float) v);
     }
@@ -539,9 +646,10 @@ juce::ValueTree Ferrum8Processor::createPresetTree() const
     }
     t.appendChild (pats, nullptr);
     juce::ValueTree glob ("GLOBALS");
-    for (auto* id : { "rate", "swing", "fillRate", "morph", "fxType", "fxMix", "fxP1", "fxP2", "fxP3", "fxP4", "fxDist", "fxRatio", "fxWave", "fxPingPong", "fxOut" })
+    for (auto* id : { "rate", "swing", "fillRate", "morph" })
         if (auto* p = apvts.getParameter (id)) glob.setProperty (id, p->convertFrom0to1 (p->getValue()), nullptr);
     t.appendChild (glob, nullptr);
+    t.appendChild (rackToTree (engine.rack.getState()), nullptr);
     return t;
 }
 
@@ -557,6 +665,12 @@ void Ferrum8Processor::applyPresetTree (const juce::ValueTree& t, bool loadPatch
             setParamValue (name.toString(), (float) glob.getProperty (name));
         }
         lastMorph = pMorph->load();
+    }
+    if (loadPatches)
+    {
+        const auto rackTree = t.getChildWithName ("FXRACK");
+        if (rackTree.isValid()) engine.rack.setState (treeToRack (rackTree));
+        else if (auto legacy = legacyRack (glob)) engine.rack.setState (*legacy);
     }
     if (loadPatches)
     {
@@ -614,14 +728,7 @@ void Ferrum8Processor::loadKit (const KitData& k)
     setParamValue ("rate", (float) (int) k.rate);
     setParamValue ("swing", k.swing);
     setParamValue ("fillRate", k.fillRate);
-    setParamValue ("fxType", (float) (int) k.fx.type);
-    setParamValue ("fxMix", k.fx.dryWet);
-    for (int i = 0; i < 4; ++i) setParamValue ("fxP" + juce::String (i + 1), k.fx.p[i]);
-    setParamValue ("fxDist", (float) (int) k.fx.distType);
-    setParamValue ("fxRatio", (float) k.fx.ratio);
-    setParamValue ("fxWave", (float) k.fx.ringWave);
-    setParamValue ("fxPingPong", k.fx.pingPong ? 1.f : 0.f);
-    setParamValue ("fxOut", (float) k.fxOutput);
+    engine.rack.setState (k.rack);
     presetName = k.name;
     presetFile = juce::File();
     presetDirty = false;
@@ -800,6 +907,7 @@ void Ferrum8Processor::getStateInformation (juce::MemoryBlock& destData)
     dt.setProperty ("expression", dice.expression, nullptr);
     dt.setProperty ("mutation", dice.mutation, nullptr);
     dt.setProperty ("character", (int) dice.character, nullptr);
+    dt.setProperty ("genre", dice.genre, nullptr);
     dt.setProperty ("key", dice.key, nullptr);
     dt.setProperty ("evolveEvery", dice.evolveEvery, nullptr);
     dt.setProperty ("allPatterns", dice.allPatterns, nullptr);
@@ -858,6 +966,7 @@ void Ferrum8Processor::setStateInformation (const void* data, int sizeInBytes)
         dice.complexity = (float) dt.getProperty ("complexity", 0.5f);
         dice.expression = (float) dt.getProperty ("expression", 0.5f);
         dice.mutation = (float) dt.getProperty ("mutation", 0.35f);
+        dice.genre = juce::jlimit (-1, (int) Genre::Count - 1, (int) dt.getProperty ("genre", -1));
         dice.character = (KitCharacter) juce::jlimit (0, (int) KitCharacter::Count - 1, (int) dt.getProperty ("character", 0));
         dice.key = juce::jlimit (-1, 11, (int) dt.getProperty ("key", -1));
         dice.evolveEvery = juce::jlimit (1, 16, (int) dt.getProperty ("evolveEvery", 2));
@@ -899,19 +1008,24 @@ juce::String Ferrum8Processor::rollSounds()
     for (int ch = 0; ch < NC; ++ch)
     {
         if (locked[(size_t) ch]) continue;
-        const Patch cur = getCurrentPatch (ch);
+        const Patch cur = getActiveEnd (ch);
         const Flavor f = Randomizer::guessFlavor (cur); // keep each channel's job so the beat still fits
-        setPatch (ch, randomizer.kitPatch (f, cur, dice), true);
+        setPatchAtActiveEnd (ch, randomizer.kitPatch (f, cur, dice));
         setChannelName (ch, juce::String ("Rnd ") + kFlavorNames[(int) f]);
         ++n;
     }
     presetDirty = true;
-    juce::String label = "Sounds";
+    juce::String label = "Sounds (" + endName (activeEnd()) + ")";
+    {
+        const Genre g = (Genre) dice.genre;
+        if (dice.genre > 0) label << " - " << kGenreNames[(int) g];
+    }
     if (dice.character != KitCharacter::Auto) label << " - " << kKitCharacterNames[(int) dice.character];
     if (dice.key >= 0) label << " - " << kKeyNames[dice.key] << " minor";
     recordRoll (label);
     sendUiChange();
-    return "New sounds on " + juce::String (n) + " channel" + (n == 1 ? "" : "s") + ", patterns kept (Ctrl+Z to undo)";
+    return "New sounds on morph end " + endName (activeEnd()) + " of " + juce::String (n) + " channel" + (n == 1 ? "" : "s")
+           + ", patterns kept (Ctrl+Z to undo)";
 }
 
 juce::String Ferrum8Processor::rollBeat()
@@ -956,10 +1070,10 @@ juce::String Ferrum8Processor::rollAll()
     for (int ch = 0; ch < NC; ++ch)
     {
         if (locked[(size_t) ch]) { keep[(size_t) ch] = true; roles[(size_t) ch] = Randomizer::guessFlavor (getCurrentPatch (ch)); continue; }
-        Patch cur = getCurrentPatch (ch);
+        Patch cur = getActiveEnd (ch);
         cur[P_CHOKE] = choiceValue ((ch == 5 || ch == 6) ? 1 : 0, 2);
-        cur[P_OUTPUT] = choiceValue (0, 3);
-        setPatch (ch, r.kitPatch (roles[(size_t) ch], cur, dice), true);
+        cur[P_OUTPUT] = choiceValue (0, paramDef (P_OUTPUT).numChoices);
+        setPatchAtActiveEnd (ch, r.kitPatch (roles[(size_t) ch], cur, dice));
         setChannelName (ch, juce::String ("Rnd ") + kFlavorNames[(int) roles[(size_t) ch]]);
     }
     std::array<PatternData, kNumPatterns> pats;
@@ -1109,6 +1223,7 @@ bool Ferrum8Processor::exportPatternAudio (const juce::File& f, int pattern, int
     auto e = std::make_unique<Engine>();
     const int block = 512;
     e->prepare (sr, block);
+    e->rack.setState (engine.rack.getState());
     for (int c = 0; c < NC; ++c)
         for (int i = 0; i < NP; ++i) e->setPatchParam (c, i, getPatchValue (c, i));
     for (int p = 0; p < kNumPatterns; ++p) e->patterns.set (p, engine.patterns.get (p), true);
@@ -1119,13 +1234,6 @@ bool Ferrum8Processor::exportPatternAudio (const juce::File& f, int pattern, int
     g.swing = pSwing->load();
     g.fillRate = pFill->load();
     g.master = pMaster->load() <= -59.9f ? 0.f : juce::Decibels::decibelsToGain (pMaster->load());
-    g.fx.type = (FxType) (int) pFxType->load();
-    g.fx.dryWet = pFxMix->load();
-    for (int i = 0; i < 4; ++i) g.fx.p[i] = pFxP[(size_t) i]->load();
-    g.fx.distType = (DistType) (int) pFxDist->load();
-    g.fx.ratio = (int) pFxRatio->load();
-    g.fx.ringWave = (int) pFxWave->load();
-    g.fx.pingPong = pFxPing->load() > 0.5f;
     for (int c = 0; c < NC; ++c) g.mutes[c] = pMute[(size_t) c]->load() > 0.5f;
     e->setGlobals (g);
     MidiConfig mc = getMidiConfig(); mc.transmitPatternNotes = false;

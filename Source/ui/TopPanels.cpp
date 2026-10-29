@@ -272,8 +272,8 @@ void ChannelStrip::paint (Graphics& g)
         g.setColour (col::dim);
         String info = String (kModelNames[(int) m]).toUpperCase();
         if (proc.getPatchValue (ch, P_CHOKE) > 0.5f) info << "  CHOKE";
-        const int out = choiceIndex (proc.getPatchValue (ch, P_OUTPUT), 3);
-        if (out == 1) info << "  OUT B"; else if (out == 2) info << "  FX";
+        const int out = choiceIndex (proc.getPatchValue (ch, P_OUTPUT), paramDef (P_OUTPUT).numChoices);
+        if (out == 1) info << "  OUT B"; else if (out == 2) info << "  > FX 1"; else if (out == 3) info << "  > FX 2";
         g.drawFittedText (info, t.withTrimmedTop (t.getHeight() / 2 + 1), Justification::topLeft, 1, 0.8f);
 
         auto mb = muteButton (ch).toFloat();
@@ -338,10 +338,8 @@ void ChannelStrip::mouseDown (const MouseEvent& e)
 //==============================================================================================
 GlobalPanel::GlobalPanel (Ferrum8Processor& p) : proc (p)
 {
-    for (auto* c : std::initializer_list<Component*> { &stopBtn, &playBtn, &rate, &swing, &fillRate, &tempo, &master, &fxMix,
-                                                       &fxType, &fxDist, &fxRatio, &fxWave, &fxPing, &fxOut })
+    for (auto* c : std::initializer_list<Component*> { &stopBtn, &playBtn, &rate, &swing, &fillRate, &tempo, &master })
         addAndMakeVisible (c);
-    for (auto& k : fxP) addAndMakeVisible (k);
 
     stopBtn.setTooltip ("Stop the pattern engine at the end of the pattern (click again: stop now)");
     playBtn.setTooltip ("Start the pattern engine in sync with the host (click again: start now)");
@@ -362,38 +360,6 @@ GlobalPanel::GlobalPanel (Ferrum8Processor& p) : proc (p)
     tempo.setTooltip (standalone ? "Tempo of the pattern engine" : "Tempo when the host does not report one (the host tempo is used while it plays)");
     master.bind (a.getParameter ("master")); master.setLabel ("Master");
     master.setAccent (col::text);
-    fxMix.bind (a.getParameter ("fxMix")); fxMix.setLabel ("Dry/Wet"); fxMix.onGestureStart = undo;
-    for (int i = 0; i < 4; ++i) { fxP[(size_t) i].bind (a.getParameter ("fxP" + String (i + 1))); fxP[(size_t) i].onGestureStart = undo; }
-    fxType.bind (a.getParameter ("fxType")); fxType.setLabel ("FX Type"); fxType.onGestureStart = undo;
-    fxDist.bind (a.getParameter ("fxDist")); fxDist.setLabel ("Shape"); fxDist.onGestureStart = undo;
-    fxRatio.bind (a.getParameter ("fxRatio")); fxRatio.setLabel ("Ratio"); fxRatio.onGestureStart = undo;
-    fxWave.bind (a.getParameter ("fxWave")); fxWave.setLabel ("Wave"); fxWave.setStyle (ChoiceBox::Style::Waves); fxWave.onGestureStart = undo;
-    fxPing.bind (a.getParameter ("fxPingPong"), { "Mono", "Ping-Pong" }); fxPing.setLabel ("Delay"); fxPing.onGestureStart = undo;
-    fxOut.bind (a.getParameter ("fxOut")); fxOut.setLabel ("FX Out");
-    fxTypeAtt = std::make_unique<ParameterAttachment> (*a.getParameter ("fxType"), [this] (float v) { updateFxLabels (roundToInt (v)); });
-    fxTypeAtt->sendInitialUpdate();
-}
-
-void GlobalPanel::updateFxLabels (int type)
-{
-    fxTypeIndex = type;
-    const auto t = (FxType) type;
-    for (int i = 0; i < 4; ++i)
-    {
-        const char* n = FxBus::paramName (t, i);
-        fxP[(size_t) i].setVisible (n != nullptr);
-        if (n != nullptr)
-        {
-            fxP[(size_t) i].setLabel (n);
-            fxP[(size_t) i].formatter = [t, i] (float v) { return String (FxBus::formatParam (t, i, v)); };
-        }
-    }
-    fxMix.setVisible (t != FxType::Off);
-    fxDist.setVisible (t == FxType::Distortion);
-    fxRatio.setVisible (t == FxType::Compressor);
-    fxWave.setVisible (t == FxType::RingMod);
-    fxPing.setVisible (t == FxType::Delay);
-    repaint();
 }
 
 void GlobalPanel::tick()
@@ -405,6 +371,21 @@ void GlobalPanel::tick()
     playBtn.setBlink (state == 1 && on);
     stopBtn.setBlink (state == 3 && on);
     stopBtn.setToggleState (false, dontSendNotification);
+    bool changed = false;
+    for (int b = 0; b < fx::kBuses; ++b)
+    {
+        float& m = meters[(size_t) b];
+        const float next = jmax (proc.getRack().meter (b), m * 0.82f);
+        if (std::abs (next - m) > 0.002f) { m = next; changed = true; }
+    }
+    if (changed) repaint (fxArea);
+}
+
+Rectangle<int> GlobalPanel::busCard (int b) const
+{
+    auto r = fxArea.reduced (8, 0).withTrimmedTop (24).withTrimmedBottom (8);
+    const int w = (r.getWidth() - 2 * 6) / 3;
+    return { r.getX() + b * (w + 6), r.getY(), w, r.getHeight() };
 }
 
 void GlobalPanel::resized()
@@ -426,19 +407,24 @@ void GlobalPanel::resized()
     master.setBounds (masterArea.withTrimmedTop (20).withHeight (68).withSizeKeepingCentre (70, 68));
     r.removeFromRight (12);
     fxArea = r;
-    auto f = fxArea.reduced (8, 0).withTrimmedTop (24);
-    fxType.setBounds (f.removeFromLeft (80).withHeight (62));
-    f.removeFromLeft (2);
-    auto extra = f.removeFromLeft (96).withHeight (62);
-    fxDist.setBounds (extra.withSizeKeepingCentre (72, 62));
-    fxRatio.setBounds (extra.withSizeKeepingCentre (72, 62));
-    fxWave.setBounds (extra.withSizeKeepingCentre (72, 62));
-    fxPing.setBounds (extra.withTrimmedTop (10).withHeight (48));
-    f.removeFromLeft (4);
-    for (auto& k : fxP) k.setBounds (f.removeFromLeft (60).withY (fxArea.getY() + 20).withHeight (68));
-    fxMix.setBounds (f.removeFromLeft (60).withY (fxArea.getY() + 20).withHeight (68));
-    f.removeFromLeft (6);
-    fxOut.setBounds (f.removeFromLeft (58).withY (fxArea.getY() + 30).withHeight (48));
+}
+
+void GlobalPanel::mouseDown (const MouseEvent& e)
+{
+    for (int b = 0; b < fx::kBuses; ++b)
+        if (busCard (b).contains (e.getPosition()) && onOpenFx) { onOpenFx (b); return; }
+}
+
+void GlobalPanel::mouseMove (const MouseEvent& e)
+{
+    int h = -1;
+    for (int b = 0; b < fx::kBuses; ++b) if (busCard (b).contains (e.getPosition())) h = b;
+    if (h != hoverCard) { hoverCard = h; repaint (fxArea); }
+}
+
+void GlobalPanel::mouseExit (const MouseEvent&)
+{
+    if (hoverCard >= 0) { hoverCard = -1; repaint (fxArea); }
 }
 
 void GlobalPanel::paint (Graphics& g)
@@ -458,18 +444,53 @@ void GlobalPanel::paint (Graphics& g)
     };
     frame (transportArea, "PATTERN ENGINE");
     frame (seqArea, "SEQUENCER");
-    frame (fxArea, "FX BUS");
+    frame (fxArea, "FX RACK  (click a bus to edit it)");
     frame (masterArea, "OUTPUT");
     g.setFont (font (13.f));
     g.setColour (col::dim);
     g.drawText ("STOP", stopBtn.getBounds().translated (0, 44).withHeight (14), Justification::centred);
     g.drawText ("PLAY", playBtn.getBounds().translated (0, 44).withHeight (14), Justification::centred);
-    if (fxTypeIndex == 0)
+
+    auto& rack = proc.getRack();
+    const int n = paramDef (P_OUTPUT).numChoices;
+    for (int b = 0; b < fx::kBuses; ++b)
     {
-        g.setColour (col::faint);
-        g.setFont (font (14.5f));
-        g.drawFittedText ("Set a channel's output to FX to send it through the FX bus (dry when Off)",
-                          fxArea.withTrimmedLeft (100).reduced (10, 18), Justification::centredLeft, 2);
+        auto r = busCard (b).toFloat();
+        g.setColour (hoverCard == b ? col::raised.brighter (0.06f) : col::raised);
+        g.fillRoundedRectangle (r, 5.f);
+        g.setColour (hoverCard == b ? col::accent : col::line.brighter (0.1f));
+        g.drawRoundedRectangle (r.reduced (0.5f), 5.f, 1.f);
+        auto t = r.reduced (9.f, 5.f);
+        auto top = t.removeFromTop (19.f);
+        g.setColour (col::text);
+        g.setFont (font (15.5f, true));
+        g.drawText (String (fx::busName (b)).toUpperCase(), top, Justification::centredLeft);
+        // channels sent here, as coloured dots
+        if (b != fx::kMasterBus)
+        {
+            float x = top.getRight() - 8.f;
+            for (int ch = Ferrum8Processor::NC - 1; ch >= 0; --ch)
+                if (choiceIndex (proc.getPatchValue (ch, P_OUTPUT), n) == b + 2)
+                {
+                    g.setColour (col::channel (ch));
+                    g.fillEllipse (x - 3.f, top.getCentreY() - 3.f, 7.f, 7.f);
+                    x -= 10.f;
+                }
+        }
+        StringArray names;
+        for (int l = 0; l < fx::kLanes; ++l)
+            for (int s = 0; s < fx::kSlots; ++s)
+                if (rack.moduleType (b, l, s) != fx::Type::None) names.add (fx::info (rack.moduleType (b, l, s)).name);
+        g.setFont (font (13.5f));
+        g.setColour (names.isEmpty() ? col::faint : col::dim);
+        g.drawFittedText (names.isEmpty() ? String ("empty") : names.joinIntoString (" > "), t.removeFromTop (34.f).toNearestInt(),
+                          Justification::topLeft, 2, 0.8f);
+        auto meter = Rectangle<float> (r.getX() + 9.f, r.getBottom() - 9.f, r.getWidth() - 18.f, 3.f);
+        g.setColour (col::bg);
+        g.fillRoundedRectangle (meter, 1.5f);
+        const float lvl = jlimit (0.f, 1.f, (Decibels::gainToDecibels (meters[(size_t) b], -60.f) + 60.f) / 66.f);
+        g.setColour (meters[(size_t) b] > 0.98f ? col::mute : col::play);
+        g.fillRoundedRectangle (meter.withWidth (meter.getWidth() * lvl), 1.5f);
     }
 }
 } // namespace ui

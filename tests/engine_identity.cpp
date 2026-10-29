@@ -4,7 +4,7 @@
 // samples. With every expression lane at 0 and Human / Vary at 0 the two must be bit-identical.
 // A last check turns one ghost note on to show the test does notice a change.
 // Build (from the project folder, one line):
-//   g++ -O2 -std=c++17 tests/engine_identity.cpp Source/engine/{Engine,Groove,Kits,Randomizer}.cpp Source/dsp/{LxrVoice,PatchParams,LxrTables,FxBus}.cpp -o engine_identity
+//   g++ -O2 -std=c++17 tests/engine_identity.cpp Source/engine/{Engine,Groove,Kits,Randomizer}.cpp Source/dsp/{LxrVoice,PatchParams,LxrTables,FxBus}.cpp Source/fx/*.cpp -o engine_identity
 // SPDX-License-Identifier: GPL-3.0-only
 #include "../Source/engine/Engine.h"
 #include "../Source/engine/Kits.h"
@@ -141,7 +141,7 @@ int main (int argc, char** argv)
                     const auto& kit = kits[(size_t) k];
                     if (kit.patterns[(size_t) pat].trig[(size_t) ch] == 0) continue;
                     if (kit.a[(size_t) ch][P_CHOKE] > 0.5f) continue; // choke partners are tested in plugin_tests
-                    if (choiceIndex (kit.a[(size_t) ch][P_OUTPUT], 3) == 2) continue; // routed through the FX bus: not a dry voice
+                    if (choiceIndex (kit.a[(size_t) ch][P_OUTPUT], paramDef (P_OUTPUT).numChoices) >= 2) continue; // routed through an FX bus: not a dry voice
                     const Result r = compare (kit, pat, ch, sr, 512);
                     ++checks;
                     const bool ok = r.maxDiff == 0.0 && r.hits > 0;

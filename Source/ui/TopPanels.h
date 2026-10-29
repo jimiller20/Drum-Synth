@@ -1,5 +1,5 @@
 // TopPanels.h - toolbar (presets, morph, undo, MIDI drag, randomise all), channel strip and
-// the global section (transport, step rate, swing, fill rate, FX bus, master)
+// the global section (transport, step rate, swing, fill rate, FX rack overview, master)
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include "Controls.h"
@@ -80,23 +80,23 @@ class GlobalPanel : public juce::Component
 {
 public:
     explicit GlobalPanel (Ferrum8Processor& p);
-    ~GlobalPanel() override { fxTypeAtt.reset(); }
     void tick();
     void paint (juce::Graphics&) override;
     void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override;
     std::function<void()> onPlay, onStop;
+    std::function<void (int)> onOpenFx;   // a bus card was clicked: show the FX tab on that bus
 
 private:
-    void updateFxLabels (int type);
+    juce::Rectangle<int> busCard (int b) const;
     Ferrum8Processor& proc;
     IconButton stopBtn { IconButton::Icon::Stop }, playBtn { IconButton::Icon::Play };
     Segmented rate;
-    Knob swing, fillRate, tempo, master, fxMix;
-    std::array<Knob, 4> fxP;
-    ChoiceBox fxType, fxDist, fxRatio, fxWave;
-    Segmented fxPing, fxOut;
-    std::unique_ptr<juce::ParameterAttachment> fxTypeAtt;
-    int fxTypeIndex = 0, blink = 0;
+    Knob swing, fillRate, tempo, master;
+    int blink = 0, hoverCard = -1;
+    std::array<float, 3> meters {};
     juce::Rectangle<int> transportArea, seqArea, fxArea, masterArea;
 };
 } // namespace ui

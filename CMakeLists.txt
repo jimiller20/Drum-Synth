@@ -51,6 +51,13 @@ set(FERRUM_SOURCES
     Source/dsp/LxrVoice.cpp
     Source/dsp/FxBus.cpp
     Source/dsp/PatchParams.cpp
+    Source/fx/FxRegistry.cpp
+    Source/fx/FxRack.cpp
+    Source/fx/FxDrive.cpp
+    Source/fx/FxDynamics.cpp
+    Source/fx/FxSpace.cpp
+    Source/fx/FxLxr.cpp
+    Source/fx/FxChains.cpp
     Source/engine/Engine.cpp
     Source/engine/Groove.cpp
     Source/engine/Randomizer.cpp
@@ -62,7 +69,8 @@ set(FERRUM_SOURCES
     Source/ui/PatchPanel.cpp
     Source/ui/PatternPanel.cpp
     Source/ui/TopPanels.cpp
-    Source/ui/DicePanel.cpp)
+    Source/ui/DicePanel.cpp
+    Source/ui/FxRackPanel.cpp)
 target_sources(Ferrum8 PRIVATE ${FERRUM_SOURCES})
 
 target_compile_definitions(Ferrum8 PUBLIC

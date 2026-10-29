@@ -13,6 +13,14 @@ namespace ferrum
 enum class Flavor : int { Kick = 0, Tom, Perc, Zap, Snare, Clap, ClosedHat, OpenHat, Cymbal, Chaos, Count };
 extern const char* const kFlavorNames[(int) Flavor::Count];
 
+// genres for the sound dice: each one shapes the recipes (a Drum & Bass snare is tight, high and
+// cracking, a Trap kick is a long 808, a Boom Bap hat is dusty ...)
+enum class Genre : int { Any = 0, House, Techno, DnB, Jungle, Trap, BoomBap, LoFi, Electro, Garage, Dubstep, Industrial, Dembow, Footwork, Count };
+extern const char* const kGenreNames[(int) Genre::Count];
+// curated cymbals: each type has its own carrier / modulator ratios, filter and decay ranges
+enum class CymbalType : int { Crash = 0, Ride, Splash, China, Cymbal808, Bell, Count };
+extern const char* const kCymbalTypeNames[(int) CymbalType::Count];
+
 // rhythm styles for the beat generator
 enum class BeatStyle : int { Auto = 0, House, Breakbeat, DnB, Trap, Dembow, Electro, Footwork, Euclid, Glitch, Count };
 extern const char* const kBeatStyleNames[(int) BeatStyle::Count];
@@ -33,6 +41,7 @@ struct DiceSettings
     int evolve = 0;             // 0 off, 1 orbit (variations around the original), 2 drift (keeps wandering)
     int evolveEvery = 2;        // pattern loops between changes
     bool allPatterns = false;   // Beat button: false = selected pattern, true = A-L as a set of related patterns
+    int genre = -1;             // sound genre: -1 follows the beat style, else a Genre
 };
 using ChannelMask = std::array<bool, kNumChannels>; // true = leave this channel alone
 
@@ -43,8 +52,11 @@ public:
     explicit Randomizer (uint32_t seed) : rng (seed) {}
 
     // routing (output, choke) and the LFO retrigger source are kept from 'current'
-    Patch patch (Flavor f, const Patch& current);
-    Patch patchForModel (const Patch& current);           // "Randomize Drum Patch": keeps the model
+    Patch patch (Flavor f, const Patch& current, Genre g = Genre::Any);
+    Patch patchForModel (const Patch& current, Genre g = Genre::Any); // "Randomize Drum Patch": keeps the model
+    Patch cymbal (CymbalType t, const Patch& current, Genre g = Genre::Any);
+    CymbalType cymbalTypeFor (Genre g);                    // a type that suits the genre (weighted)
+    Genre genreFor (const DiceSettings& s);                // resolves "follow the beat style"
     Patch alter (const Patch& p, float amount = 0.12f);    // "Alter Drum Patch"
     static Flavor guessFlavor (const Patch& p);
 
@@ -74,6 +86,7 @@ public:
     // ---- kit sounds ----------------------------------------------------------------------
     Patch kitPatch (Flavor f, const Patch& current, const DiceSettings& s); // patch() + character + key
     void applyCharacter (Patch& p, KitCharacter c);
+    void applyGenre (Patch& p, Flavor f, Genre g);        // genre ranges on top of a flavor recipe
     static void tuneToKey (Patch& p, int key);
 
     float uni (float a, float b) { return std::uniform_real_distribution<float> (a, b) (rng); }

@@ -24,6 +24,7 @@ Knob::~Knob() { att.reset(); }
 void Knob::bind (RangedAudioParameter* p)
 {
     att.reset();
+    free = {};
     param = p;
     if (param != nullptr)
     {
@@ -33,10 +34,24 @@ void Knob::bind (RangedAudioParameter* p)
     repaint();
 }
 
+void Knob::bindFree (Free f)
+{
+    att.reset();
+    param = nullptr;
+    free = std::move (f);
+    refresh();
+}
+
+void Knob::refresh()
+{
+    if (free.get != nullptr && ! dragging) { norm = jlimit (0.f, 1.f, free.get()); repaint(); }
+}
+
 String Knob::valueText() const
 {
-    if (param == nullptr) return {};
     if (formatter) return formatter (norm);
+    if (free.text != nullptr) return free.text (norm);
+    if (param == nullptr) return {};
     return param->getText (norm, 64);
 }
 
@@ -74,7 +89,7 @@ void Knob::paint (Graphics& g)
     g.setColour (inactive ? col::faint : col::text);
     g.drawLine (Line<float> (mid, tip), 2.f);
 
-    const bool showValue = (dragging || hover) && param != nullptr;
+    const bool showValue = (dragging || hover) && isBound();
     g.setFont (font (showValue ? 14.f : 14.5f, showValue));
     g.setColour (showValue ? ac.brighter (0.2f) : (inactive ? col::faint : col::dim));
     g.drawFittedText (showValue ? valueText() : label, b.removeFromBottom (kLabelH + 1.f).toNearestInt(), Justification::centred, 1, 0.8f);
@@ -82,6 +97,13 @@ void Knob::paint (Graphics& g)
 
 void Knob::setNorm (float n, bool gesture)
 {
+    if (free.set != nullptr)
+    {
+        norm = jlimit (0.f, 1.f, n);
+        free.set (norm);
+        repaint();
+        return;
+    }
     if (param == nullptr || att == nullptr) return;
     norm = jlimit (0.f, 1.f, n);
     const float v = param->convertFrom0to1 (norm);
@@ -91,40 +113,45 @@ void Knob::setNorm (float n, bool gesture)
 
 void Knob::resetToDefault()
 {
-    if (param == nullptr) return;
+    if (! isBound()) return;
     if (onGestureStart) onGestureStart();
     const float before = norm;
-    setNorm (param->getDefaultValue(), false);
+    setNorm (param != nullptr ? param->getDefaultValue() : free.def, false);
     if (onUserDelta) onUserDelta (norm - before);
 }
 
 void Knob::mouseDown (const MouseEvent& e)
 {
-    if (param == nullptr) return;
+    if (! isBound()) return;
     if (e.mods.isPopupMenu())
     {
         PopupMenu m;
-        m.addSectionHeader (param->getName (64) + ":  " + valueText());
+        const String name = param != nullptr ? param->getName (64) : free.name;
+        m.addSectionHeader (name + ":  " + valueText());
         m.addItem (1, "Reset to default");
         m.addItem (2, "Enter value...");
         SafePointer<Knob> safe (this);
-        m.showMenuAsync (PopupMenu::Options().withTargetComponent (this), [safe] (int r)
+        m.showMenuAsync (PopupMenu::Options().withTargetComponent (this), [safe, name] (int r)
         {
             if (safe == nullptr) return;
             if (r == 1) safe->resetToDefault();
             if (r == 2)
             {
-                auto* w = new AlertWindow ("Enter value", safe->param->getName (64), MessageBoxIconType::NoIcon, safe.getComponent());
+                auto* w = new AlertWindow ("Enter value", name, MessageBoxIconType::NoIcon, safe.getComponent());
                 w->addTextEditor ("v", safe->valueText());
                 w->addButton ("OK", 1, KeyPress (KeyPress::returnKey));
                 w->addButton ("Cancel", 0, KeyPress (KeyPress::escapeKey));
                 w->enterModalState (true, ModalCallbackFunction::create ([safe, w] (int res)
                 {
-                    if (res == 1 && safe != nullptr && safe->param != nullptr)
+                    if (res == 1 && safe != nullptr && safe->isBound())
                     {
+                        const auto text = w->getTextEditorContents ("v");
+                        float n = safe->norm;
+                        if (safe->param != nullptr) n = safe->param->getValueForText (text);
+                        else if (safe->free.parse == nullptr || ! safe->free.parse (text, n)) return;
                         if (safe->onGestureStart) safe->onGestureStart();
                         const float before = safe->norm;
-                        safe->setNorm (safe->param->getValueForText (w->getTextEditorContents ("v")), false);
+                        safe->setNorm (n, false);
                         if (safe->onUserDelta) safe->onUserDelta (safe->norm - before);
                     }
                 }), true);
@@ -138,7 +165,7 @@ void Knob::mouseDown (const MouseEvent& e)
     accumDrag = 0.f;
     dragStartNorm = norm;
     if (onGestureStart) onGestureStart();
-    att->beginGesture();
+    if (att != nullptr) att->beginGesture();
     repaint();
 }
 
@@ -167,7 +194,7 @@ void Knob::mouseDoubleClick (const MouseEvent& e)
 
 void Knob::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& w)
 {
-    if (param == nullptr) return;
+    if (! isBound()) return;
     const float before = norm;
     setNorm (norm + w.deltaY * (e.mods.isShiftDown() ? 0.01f : 0.05f), false);
     if (onUserDelta && norm != before) onUserDelta (norm - before);
@@ -177,9 +204,22 @@ void Knob::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& w)
 ChoiceBox::ChoiceBox() {}
 ChoiceBox::~ChoiceBox() { att.reset(); }
 
+StringArray ChoiceBox::names() const { return param != nullptr ? choicesOf (param) : freeChoices; }
+
+void ChoiceBox::bindFree (const String& name, const StringArray& choices, int i)
+{
+    att.reset();
+    param = nullptr;
+    freeName = name;
+    freeChoices = choices;
+    index = i;
+    repaint();
+}
+
 void ChoiceBox::bind (RangedAudioParameter* p)
 {
     att.reset();
+    freeChoices.clear();
     param = p;
     if (param != nullptr)
     {
@@ -198,7 +238,7 @@ void ChoiceBox::paint (Graphics& g)
     g.fillRoundedRectangle (box, 4.f);
     g.setColour (isMouseOverOrDragging() ? accent.withAlpha (0.7f) : col::line.brighter (0.15f));
     g.drawRoundedRectangle (box, 4.f, 1.f);
-    const auto names = choicesOf (param);
+    const auto names = this->names();
     const auto c = inactive ? col::faint : col::text;
     auto inner = box.reduced (6.f, 5.f);
     if (style == Style::Waves) drawWaveIcon (g, inner.withTrimmedRight (6.f), index, inactive ? col::faint : accent);
@@ -222,12 +262,13 @@ void ChoiceBox::paint (Graphics& g)
 
 void ChoiceBox::choose (int idx)
 {
-    if (param == nullptr || att == nullptr) return;
-    const int n = choicesOf (param).size();
+    const bool freeMode = param == nullptr && ! freeChoices.isEmpty();
+    if (! freeMode && (param == nullptr || att == nullptr)) return;
+    const int n = names().size();
     idx = jlimit (0, jmax (0, n - 1), idx);
     if (idx == index) return;
     if (onGestureStart) onGestureStart();
-    att->setValueAsCompleteGesture ((float) idx);
+    if (! freeMode) att->setValueAsCompleteGesture ((float) idx);
     index = idx;
     if (onUserChoice) onUserChoice (idx);
     repaint();
@@ -244,10 +285,10 @@ void ChoiceBox::mouseDrag (const MouseEvent& e)
 
 void ChoiceBox::mouseUp (const MouseEvent& e)
 {
-    if (dragged || param == nullptr || ! getLocalBounds().contains (e.getPosition())) return;
+    if (dragged || (param == nullptr && freeChoices.isEmpty()) || ! getLocalBounds().contains (e.getPosition())) return;
     PopupMenu m;
-    const auto names = choicesOf (param);
-    m.addSectionHeader (param->getName (64));
+    const auto names = this->names();
+    m.addSectionHeader (param != nullptr ? param->getName (64) : freeName);
     for (int i = 0; i < names.size(); ++i) m.addItem (i + 1, names[i], true, i == index);
     SafePointer<ChoiceBox> safe (this);
     m.showMenuAsync (PopupMenu::Options().withTargetComponent (this).withMinimumWidth (120), [safe] (int r)
@@ -266,9 +307,20 @@ void ChoiceBox::mouseWheelMove (const MouseEvent&, const MouseWheelDetails& w)
 Segmented::Segmented() {}
 Segmented::~Segmented() { att.reset(); }
 
+void Segmented::bindFree (const StringArray& options, int i)
+{
+    att.reset();
+    param = nullptr;
+    isFree = true;
+    names = options;
+    index = i;
+    repaint();
+}
+
 void Segmented::bind (RangedAudioParameter* p, StringArray displayNames)
 {
     att.reset();
+    isFree = false;
     param = p;
     names = displayNames.isEmpty() ? choicesOf (p) : displayNames;
     if (param != nullptr)
@@ -323,14 +375,14 @@ void Segmented::paint (Graphics& g)
 
 void Segmented::mouseDown (const MouseEvent& e)
 {
-    if (param == nullptr || att == nullptr) return;
+    if (! isFree && (param == nullptr || att == nullptr)) return;
     auto area = segmentArea();
     const int n = jmax (1, names.size());
     const float rel = vertical ? (e.position.y - area.getY()) / area.getHeight() : (e.position.x - area.getX()) / area.getWidth();
     const int idx = jlimit (0, n - 1, (int) (rel * n));
     if (idx == index) return;
     if (onGestureStart) onGestureStart();
-    att->setValueAsCompleteGesture ((float) idx);
+    if (! isFree) att->setValueAsCompleteGesture ((float) idx);
     index = idx;
     if (onUserChoice) onUserChoice (idx);
     repaint();

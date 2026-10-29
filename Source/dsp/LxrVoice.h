@@ -28,7 +28,7 @@ public:
 
     float panLeft() const { return triggeredPanL; }
     float panRight() const { return triggeredPanR; }
-    int output() const { return choiceIndex (base[P_OUTPUT], 3); }
+    int output() const { return choiceIndex (base[P_OUTPUT], 4); } // 0 A, 1 B, 2 FX 1, 3 FX 2
     bool chokes() const { return choiceIndex (base[P_CHOKE], 2) == 1; }
     int lfoRetrigSource() const { return choiceIndex (base[P_LFO_RETRIG], 9); } // 0 free, 1..8 ch
     bool isSilent() const { return silent; }

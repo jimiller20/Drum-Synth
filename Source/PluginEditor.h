@@ -1,5 +1,6 @@
 // PluginEditor.h - the Ferrum 8 window: toolbar, channel strip, drum patch section,
-// pattern section and global section (the Microtonic workflow), scalable 60-200%.
+// pattern section and global section (the Microtonic workflow), plus the FX rack tab;
+// scalable 60-200%.
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include "PluginProcessor.h"
@@ -8,6 +9,7 @@
 #include "ui/PatternPanel.h"
 #include "ui/TopPanels.h"
 #include "ui/DicePanel.h"
+#include "ui/FxRackPanel.h"
 
 class Ferrum8Editor : public juce::AudioProcessorEditor,
                       public juce::DragAndDropContainer,
@@ -15,7 +17,7 @@ class Ferrum8Editor : public juce::AudioProcessorEditor,
                       private juce::ChangeListener
 {
 public:
-    static constexpr int kDesignW = 1240, kDesignH = 848;
+    static constexpr int kDesignW = 1240, kDesignH = 882;
     explicit Ferrum8Editor (Ferrum8Processor&);
     ~Ferrum8Editor() override;
     void paint (juce::Graphics&) override;
@@ -30,6 +32,12 @@ private:
         void paint (juce::Graphics& g) override { g.fillAll (ui::col::bg); if (onPaint) onPaint (g); }
     };
     void drawStatus (juce::Graphics& g);
+    void drawTabs (juce::Graphics& g);
+public:
+    void setTab (int t);              // 0 drums (patch + pattern), 1 FX rack
+    int getTab() const { return tab; }
+    ui::FxRackPanel& getFxPanel() { return fxPanel; }
+private:
 
     void timerCallback() override;
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
@@ -58,6 +66,10 @@ private:
     ui::PatchPanel patch;
     ui::PatternPanel pattern;
     ui::GlobalPanel global;
+    ui::FxRackPanel fxPanel;
+    ui::IconButton drumsTab { ui::IconButton::Icon::None, "DRUMS" }, fxTab { ui::IconButton::Icon::None, "FX RACK" };
+    int tab = 0;
+    juce::Rectangle<int> tabArea;
     juce::TooltipWindow tooltips { this, 700 };
     juce::String statusText;
     int statusTimer = 0;

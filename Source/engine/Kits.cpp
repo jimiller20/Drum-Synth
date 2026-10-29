@@ -113,7 +113,10 @@ static KitData concrete()
         { "Clap", P (Model::Snare).set (P_NOISE_MIX, 127).set (P_NOISE_FREQ, 127).set (P_PITCH_AMT, 0).set (P_ATTACK, 7)
                       .repeat (4).set (P_DECAY, 15).set (P_SLOPE, 15).ch (P_FILTER_TYPE, 2).set (P_FILTER_FREQ, 78)
                       .set (P_FILTER_RESO, 30).p } });
-    k.fx.type = FxType::Delay; k.fx.dryWet = 0.35f; k.fx.p[0] = 0.55f; k.fx.p[1] = 0.7f; k.fx.p[2] = 0.5f; k.fx.p[3] = 0.45f;
+    {
+        FxSettings fs; fs.type = FxType::Delay; fs.dryWet = 0.35f; fs.p[0] = 0.55f; fs.p[1] = 0.7f; fs.p[2] = 0.5f; fs.p[3] = 0.45f;
+        k.rack = fx::FxRack::fromLegacy (fs, 0);
+    }
     k.fillRate = 4.f;
     PatternData& a = k.patterns[0];
     lane (a, 0, "X...x...x...x...");
@@ -158,8 +161,11 @@ static KitData bitElectro()
                           .set (P_DECIMATE, 110).ch (P_CHOKE, 1).p },
         { "Clap", P (Model::Snare).set (P_NOISE_MIX, 127).set (P_PITCH_AMT, 0).set (P_ATTACK, 9).repeat (3).set (P_DECAY, 13)
                       .ch (P_FILTER_TYPE, 2).set (P_FILTER_FREQ, 70).set (P_FILTER_RESO, 20).set (P_DECIMATE, 100).p } });
-    k.fx.type = FxType::Distortion; k.fx.distType = DistType::Rat; k.fx.dryWet = 0.5f;
-    k.fx.p[0] = 0.25f; k.fx.p[1] = 0.2f; k.fx.p[2] = 0.6f; k.fx.p[3] = 0.7f;
+    {
+        FxSettings fs; fs.type = FxType::Distortion; fs.distType = DistType::Rat; fs.dryWet = 0.5f;
+        fs.p[0] = 0.25f; fs.p[1] = 0.2f; fs.p[2] = 0.6f; fs.p[3] = 0.7f;
+        k.rack = fx::FxRack::fromLegacy (fs, 0);
+    }
     k.swing = 0.35f; k.fillRate = 3.f;
     PatternData& a = k.patterns[0];
     lane (a, 0, "X..x......x.....");
@@ -193,7 +199,10 @@ static KitData metalPerc()
         { "Shaker", P (Model::HiHat).ch (P_OSC_WAVE, lxr::WAVE_NOISE).set (P_OSC_COARSE, 127).set (P_ATTACK, 10).set (P_DECAY, 9)
                         .set (P_SLOPE, 50).set (P_FILTER_FREQ, 95).norm (P_PAN, 0.6f).norm (P_LEVEL, 0.7f).p },
         { "Clap", clapPatch() } });
-    k.fx.type = FxType::RingMod; k.fx.dryWet = 0.5f; k.fx.p[0] = 0.4f;
+    {
+        FxSettings fs; fs.type = FxType::RingMod; fs.dryWet = 0.5f; fs.p[0] = 0.4f;
+        k.rack = fx::FxRack::fromLegacy (fs, 0);
+    }
     k.swing = 0.15f;
     PatternData& a = k.patterns[0];
     lane (a, 0, "X......x..x.....");

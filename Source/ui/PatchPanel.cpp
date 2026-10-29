@@ -35,8 +35,9 @@ PatchPanel::PatchPanel (Ferrum8Processor& p) : proc (p)
     nextBtn.setTooltip ("Next drum patch in folder");
     openBtn.setTooltip ("Open drum patch...");
     saveBtn.setTooltip ("Save drum patch...");
-    diceBtn.setTooltip ("Random patch that fits this channel's model");
-    flavorBtn.setTooltip ("Choose the kind of random sound (kick, snare, hat, chaos ...)");
+    diceBtn.setTooltip ("Random patch that fits this channel's model (in the Dice panel's sound genre). It goes to the morph end "
+                        "the Sound Morph slider is nearest to; the other end keeps its sound.");
+    flavorBtn.setTooltip ("Random sound in a genre (a Drum & Bass snare, a Trap kick ...), a cymbal type, or another kind of sound");
     flavorBtn.onClick = [this] { showRandomMenu(); };
     alterBtn.setTooltip ("Alter: small random changes to this patch");
     editAllBtn.setTooltip ("Edit All: knob moves apply to every unmuted channel");
@@ -70,7 +71,7 @@ void PatchPanel::buildControls()
     {
         if (p == P_MODEL) continue;
         const auto& d = paramDef (p);
-        if (p == P_OUTPUT || p == P_CHOKE || p == P_FM_MODE)
+        if (p == P_CHOKE || p == P_FM_MODE)
         {
             auto s = std::make_unique<Segmented>();
             s->setLabel (d.label);
@@ -101,6 +102,7 @@ void PatchPanel::buildControls()
         if (p == P_GHOST) tip = "Ghost Depth: how much softer, darker and rounder the GHOST lane levels 1-3 play (50% = normal, 0% = off)";
         if (p == P_HUMANIZE) tip = "Humanize: timing and dynamics that wander from hit to hit like a real player";
         if (p == P_VARIANCE) tip = "Variance: random per-hit changes to decay, pitch, tone, filter and transient (happy accidents)";
+        if (p == P_OUTPUT) tip = "Output: plugin output A or B, or through the FX 1 / FX 2 bus of the FX rack (FX tab)";
         if (auto* tc = dynamic_cast<SettableTooltipClient*> (controls[(size_t) p].get())) tc->setTooltip (tip);
         addAndMakeVisible (*controls[(size_t) p]);
     }
@@ -226,7 +228,7 @@ void PatchPanel::layoutGroups()
             {
                 if (auto* c = controls[(size_t) p].get())
                 {
-                    if (p == P_OUTPUT || p == P_CHOKE || p == P_FM_MODE)
+                    if (p == P_CHOKE || p == P_FM_MODE)
                         c->setBounds (cx + 3, y + kTitleH + 14, kCellW - 6, kCellH - 18);
                     else
                         c->setBounds (cx, y + kTitleH + 2, kCellW, kCellH);
@@ -318,9 +320,39 @@ void PatchPanel::showPatchMenu (bool repeatLast)
 
 void PatchPanel::showRandomMenu()
 {
+    const Patch cur = proc.getActiveEnd (channel);
+    const Flavor role = Randomizer::guessFlavor (cur);
+    const String end = Ferrum8Processor::endName (proc.activeEnd());
     PopupMenu m;
-    m.addSectionHeader ("Random patch for channel " + String (channel + 1));
-    for (int f = 0; f < (int) Flavor::Count; ++f) m.addItem (100 + f, String (kFlavorNames[f]) + (f == (int) Flavor::Chaos ? "  (anything goes)" : ""));
+    m.addSectionHeader ("Random " + String (kFlavorNames[(int) role]) + " in the style of...   (writes morph end " + end + ")");
+    for (int g = 1; g < (int) Genre::Count; ++g)
+    {
+        if (g == 8) m.addColumnBreak();
+        m.addItem (3000 + g, kGenreNames[g]);
+    }
+    if (role == Flavor::Cymbal)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Cymbal type");
+        for (int t = 0; t < (int) CymbalType::Count; ++t) m.addItem (2000 + (int) Flavor::Cymbal * 32 + 20 + t, kCymbalTypeNames[t]);
+    }
+    m.addColumnBreak();
+    m.addSectionHeader ("Random as...");
+    for (int f = 0; f < (int) Flavor::Chaos; ++f)
+    {
+        PopupMenu sub;
+        sub.addItem (2000 + f * 32, "Any genre");
+        sub.addSeparator();
+        for (int g = 1; g < (int) Genre::Count; ++g) sub.addItem (2000 + f * 32 + g, kGenreNames[g]);
+        if (f == (int) Flavor::Cymbal)
+        {
+            sub.addSeparator();
+            sub.addSectionHeader ("Cymbal type");
+            for (int t = 0; t < (int) CymbalType::Count; ++t) sub.addItem (2000 + f * 32 + 20 + t, kCymbalTypeNames[t]);
+        }
+        m.addSubMenu (kFlavorNames[f], sub);
+    }
+    m.addItem (100 + (int) Flavor::Chaos, "Chaos  (anything goes)");
     m.addSeparator();
     m.addItem (11, "Random morph target (B end)");
     m.showMenuAsync (PopupMenu::Options().withTargetComponent (&diceBtn), [this] (int r) { if (r > 0) runPatchMenuItem (r); });
@@ -330,6 +362,13 @@ void PatchPanel::runPatchMenuItem (int id)
 {
     lastPatchMenuItem = id;
     const int ch = channel;
+    // sound dice write the morph end the slider is nearest to (a new model goes to both ends)
+    auto rollTo = [this, ch] (const Patch& p, const String& name)
+    {
+        const int end = proc.setPatchAtActiveEnd (ch, p);
+        proc.setChannelName (ch, name);
+        if (showStatus) showStatus (name + " on channel " + String (ch + 1) + "  (morph end " + Ferrum8Processor::endName (end) + ")");
+    };
     auto clipFromChannel = [this, ch]
     {
         PatchClip c; c.a = proc.getEndA (ch); c.b = proc.getEndB (ch); c.name = proc.getChannelName (ch); return c;
@@ -403,20 +442,26 @@ void PatchPanel::runPatchMenuItem (int id)
             }), true);
             return;
         }
-        case 9: proc.pushUndo(); proc.setPatch (ch, proc.randomizer.alter (proc.getCurrentPatch (ch)), true); break;
+        case 9:
+        {
+            proc.pushUndo();
+            const int end = proc.setPatchAtActiveEnd (ch, proc.randomizer.alter (proc.getActiveEnd (ch)));
+            if (showStatus) showStatus ("Altered channel " + String (ch + 1) + "  (morph end " + Ferrum8Processor::endName (end) + ")");
+            break;
+        }
         case 10:
         {
             proc.pushUndo();
-            const Patch p = proc.randomizer.patchForModel (proc.getCurrentPatch (ch));
-            proc.setPatch (ch, p, true);
-            proc.setChannelName (ch, String ("Rnd ") + kFlavorNames[(int) Randomizer::guessFlavor (p)]);
-            if (showStatus) showStatus ("Random " + String (kFlavorNames[(int) Randomizer::guessFlavor (p)]) + " on channel " + String (ch + 1));
+            const Genre g = proc.randomizer.genreFor (proc.dice);
+            const Patch p = proc.randomizer.patchForModel (proc.getActiveEnd (ch), g);
+            const Flavor f = Randomizer::guessFlavor (p);
+            rollTo (p, (g == Genre::Any ? String ("Rnd") : String (kGenreNames[(int) g])) + " " + kFlavorNames[(int) f]);
             break;
         }
         case 11:
         {
             proc.pushUndo();
-            const Patch cur = proc.getCurrentPatch (ch);
+            const Patch cur = proc.getEndA (ch);
             Patch b = proc.randomizer.patch (Randomizer::guessFlavor (cur), cur);
             b[P_MODEL] = cur[P_MODEL];
             proc.setMorphTarget (ch, b);
@@ -441,10 +486,29 @@ void PatchPanel::runPatchMenuItem (int id)
             {
                 proc.pushUndo();
                 const Flavor f = (Flavor) (id - 100);
-                const Patch p = proc.randomizer.patch (f, proc.getCurrentPatch (ch));
-                proc.setPatch (ch, p, true);
-                proc.setChannelName (ch, String ("Rnd ") + kFlavorNames[(int) f]);
-                if (showStatus) showStatus ("Random " + String (kFlavorNames[(int) f]) + " on channel " + String (ch + 1));
+                rollTo (proc.randomizer.patch (f, proc.getActiveEnd (ch)), String ("Rnd ") + kFlavorNames[(int) f]);
+            }
+            else if (id >= 2000 && id < 2000 + (int) Flavor::Count * 32)
+            {
+                proc.pushUndo();
+                const Flavor f = (Flavor) ((id - 2000) / 32);
+                const int k = (id - 2000) % 32;
+                const Patch cur = proc.getActiveEnd (ch);
+                if (k >= 20 && k < 20 + (int) CymbalType::Count)
+                    rollTo (proc.randomizer.cymbal ((CymbalType) (k - 20), cur, Genre::Any), kCymbalTypeNames[k - 20]);
+                else
+                {
+                    const Genre g = (Genre) std::clamp (k, 0, (int) Genre::Count - 1);
+                    rollTo (proc.randomizer.patch (f, cur, g), (g == Genre::Any ? String ("Rnd") : String (kGenreNames[(int) g])) + " " + kFlavorNames[(int) f]);
+                }
+            }
+            else if (id > 3000 && id < 3000 + (int) Genre::Count)
+            {
+                proc.pushUndo();
+                const Genre g = (Genre) (id - 3000);
+                const Patch cur = proc.getActiveEnd (ch);
+                const Flavor f = Randomizer::guessFlavor (cur);
+                rollTo (proc.randomizer.patch (f, cur, g), String (kGenreNames[(int) g]) + " " + kFlavorNames[(int) f]);
             }
             break;
     }

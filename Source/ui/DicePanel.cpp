@@ -22,13 +22,15 @@ DicePanel::DicePanel (Ferrum8Processor& p, std::function<void (const String&)> s
 {
     for (int i = 0; i < (int) BeatStyle::Count; ++i) style.addItem (kBeatStyleNames[i], i + 1);
     for (int i = 0; i < (int) KitCharacter::Count; ++i) character.addItem (kKitCharacterNames[i], i + 1);
+    genre.addItem ("Follow the beat style", 1);
+    for (int i = 0; i < (int) Genre::Count; ++i) genre.addItem (i == 0 ? String ("Any (no genre)") : String (kGenreNames[i]), i + 2);
     key.addItem ("Off (free tuning)", 1);
     for (int i = 0; i < 12; ++i) key.addItem (String (kKeyNames[i]) + " minor pentatonic", i + 2);
     evolve.addItem ("Off", 1); evolve.addItem ("Orbit (variations around the original)", 2); evolve.addItem ("Drift (keeps wandering)", 3);
     for (int n : { 1, 2, 4, 8 }) every.addItem ("every " + String (n) + (n == 1 ? " loop" : " loops"), n);
 
     for (auto* s : { &density, &complexity, &expression, &mutation }) { styleSlider (*s, " %"); addAndMakeVisible (s); }
-    for (auto* c : { &style, &character, &key, &evolve, &every }) addAndMakeVisible (c);
+    for (auto* c : { &style, &genre, &character, &key, &evolve, &every }) addAndMakeVisible (c);
     for (auto* b : { &scopeOne, &scopeAll, &soundsBtn, &beatBtn, &allBtn, &morphBtn, &historyBtn, &keepBtn }) addAndMakeVisible (b);
     scopeOne.setClickingTogglesState (true); scopeAll.setClickingTogglesState (true);
     scopeOne.setRadioGroupId (771); scopeAll.setRadioGroupId (771);
@@ -40,6 +42,8 @@ DicePanel::DicePanel (Ferrum8Processor& p, std::function<void (const String&)> s
     expression.setTooltip ("How much ghosting, nudging, chance and rolls the beat gets");
     mutation.setTooltip ("Size of the changes Evolve and the variation patterns make");
     character.setTooltip ("A character every new sound shares, so the kit belongs together");
+    genre.setTooltip ("Sound genre for every sound dice: a Drum & Bass snare is tight, high and cracking, a Trap kick a long 808, "
+                      "a Boom Bap hat dusty. 'Follow the beat style' picks the genre that matches the Style above.");
     key.setTooltip ("Pitched drums (kicks, toms, percussion, snare bodies) snap to this key");
     evolve.setTooltip ("While playing, change the pattern every few loops. Orbit always starts from the original "
                        "(turning Evolve off brings it back); Drift keeps every change.");
@@ -52,6 +56,7 @@ DicePanel::DicePanel (Ferrum8Processor& p, std::function<void (const String&)> s
 
     style.onChange = [this] { proc.dice.style = (BeatStyle) (style.getSelectedId() - 1); };
     character.onChange = [this] { proc.dice.character = (KitCharacter) (character.getSelectedId() - 1); };
+    genre.onChange = [this] { proc.dice.genre = genre.getSelectedId() - 2; };
     key.onChange = [this] { proc.dice.key = key.getSelectedId() - 2; };
     evolve.onChange = [this] { proc.setEvolve (evolve.getSelectedId() - 1); keepBtn.setEnabled (proc.dice.evolve == 1); };
     every.onChange = [this] { proc.dice.evolveEvery = every.getSelectedId(); };
@@ -76,6 +81,7 @@ void DicePanel::sync()
     const auto& d = proc.dice;
     style.setSelectedId ((int) d.style + 1, dontSendNotification);
     character.setSelectedId ((int) d.character + 1, dontSendNotification);
+    genre.setSelectedId (d.genre + 2, dontSendNotification);
     key.setSelectedId (d.key + 2, dontSendNotification);
     evolve.setSelectedId (d.evolve + 1, dontSendNotification);
     every.setSelectedId (d.evolveEvery, dontSendNotification);
@@ -144,6 +150,7 @@ void DicePanel::resized()
     }
     r.removeFromTop (6);
     kitHeader = r.removeFromTop (20);
+    genre.setBounds (row ("Genre"));
     character.setBounds (row ("Character"));
     key.setBounds (row ("Key"));
     r.removeFromTop (6);
@@ -186,7 +193,7 @@ void DicePanel::paint (Graphics& g)
         g.fillRect (h.getX() + 120, h.getCentreY(), h.getWidth() - 120, 1);
     };
     header (beatHeader, "BEAT");
-    header (kitHeader, "KIT SOUNDS");
+    header (kitHeader, "SOUNDS  (go to the nearest morph end)");
     header (evolveHeader, "EVOLVE WHILE PLAYING");
     header (rollHeader, "ROLL  (locked channels are skipped)");
     g.setFont (font (15.f));

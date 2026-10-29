@@ -13,7 +13,7 @@ public:
     DicePanel (Ferrum8Processor& p, std::function<void (const juce::String&)> statusFn);
     void paint (juce::Graphics&) override;
     void resized() override;
-    static constexpr int kW = 440, kH = 500;
+    static constexpr int kW = 440, kH = 532;
 
 private:
     void sync();                                   // controls <- processor
@@ -22,7 +22,7 @@ private:
 
     Ferrum8Processor& proc;
     std::function<void (const juce::String&)> status;
-    juce::ComboBox style, character, key, evolve, every;
+    juce::ComboBox style, genre, character, key, evolve, every;
     juce::Slider density, complexity, expression, mutation;
     juce::TextButton scopeOne { "Selected pattern" }, scopeAll { "All patterns A-L" };
     juce::TextButton soundsBtn { "Sounds" }, beatBtn { "Beat" }, allBtn { "All" }, morphBtn { "Morph B" };

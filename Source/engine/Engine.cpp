@@ -26,17 +26,17 @@ void Engine::prepare (double sampleRate, int maxBlock)
 {
     sr = sampleRate;
     for (int c = 0; c < kNumChannels; ++c) voices[(size_t) c].prepare (sr, (uint32_t) (c + 1) * 7919u);
-    fxBus.prepare (sr);
-    fxBus.setSettings (globals.fx);
+    rack.prepare (sr, std::max (maxBlock, 64));
     const size_t n = (size_t) std::max (maxBlock, 16);
-    mono.assign (n, 0.f); fxL.assign (n, 0.f); fxR.assign (n, 0.f);
+    mono.assign (n, 0.f);
+    for (int k = 0; k < 2; ++k) { busL[k].assign (n, 0.f); busR[k].assign (n, 0.f); }
     reset();
 }
 
 void Engine::reset()
 {
     for (auto& v : voices) v.reset();
-    fxBus.reset();
+    rack.reset();
     pending.clear();
     pendingNoteOffs.clear();
     expectedPpq = -1.0;
@@ -70,12 +70,7 @@ double Engine::swingWarp (double ppq, float swing)
 
 void Engine::setGlobals (const Globals& g)
 {
-    const auto& a = g.fx; const auto& b = globals.fx;
-    const bool fxChanged = a.type != b.type || a.dryWet != b.dryWet || a.p[0] != b.p[0] || a.p[1] != b.p[1]
-                        || a.p[2] != b.p[2] || a.p[3] != b.p[3] || a.distType != b.distType || a.ratio != b.ratio
-                        || a.ringWave != b.ringWave || a.pingPong != b.pingPong;
     globals = g;
-    if (fxChanged) fxBus.setSettings (g.fx);
 }
 
 void Engine::previewTrigger (int ch, float velocity)
@@ -380,8 +375,9 @@ void Engine::doTrigger (const Trig& tr, int sampleIndex)
 void Engine::process (float* aL, float* aR, float* bL, float* bR, int n, const Transport& t,
                       const std::vector<MidiIn>& midiIn, std::vector<MidiOut>* midiOut)
 {
-    if ((int) mono.size() < n) { mono.resize ((size_t) n); fxL.resize ((size_t) n); fxR.resize ((size_t) n); }
+    if ((int) mono.size() < n) { mono.resize ((size_t) n); for (int k = 0; k < 2; ++k) { busL[k].resize ((size_t) n); busR[k].resize ((size_t) n); } }
     const double bpm = (t.hostHasTransport && t.bpm > 0) ? t.bpm : globals.tempo;
+    rack.setTempo (bpm);
     for (auto& v : voices) v.setBpm (bpm);
     for (int c = 0; c < kNumChannels; ++c) uiMidiMute[c].store (midiMute[c]);
 
@@ -408,7 +404,7 @@ void Engine::process (float* aL, float* aR, float* bL, float* bR, int n, const T
     std::stable_sort (trigs.begin(), trigs.end(), [] (const Trig& a, const Trig& b)
                       { return a.offset != b.offset ? a.offset < b.offset : a.ch < b.ch; });
 
-    for (int i = 0; i < n; ++i) { aL[i] = aR[i] = 0.f; fxL[(size_t) i] = fxR[(size_t) i] = 0.f; }
+    for (int i = 0; i < n; ++i) { aL[i] = aR[i] = 0.f; for (int k = 0; k < 2; ++k) busL[k][(size_t) i] = busR[k][(size_t) i] = 0.f; }
     if (bL != nullptr) for (int i = 0; i < n; ++i) { bL[i] = bR[i] = 0.f; }
 
     auto renderSegment = [&] (int pos, int len)
@@ -421,15 +417,11 @@ void Engine::process (float* aL, float* aR, float* bL, float* bR, int n, const T
             v.render (mono.data(), len);
             const float pl = v.panLeft(), pr = v.panRight();
             const int o = v.output();
-            if (o == 2) // FX bus: 16-bit saturating sum, like the hardware's fxBuffer
+            if (o >= 2) // FX 1 / FX 2 bus of the rack
             {
-                for (int i = 0; i < len; ++i)
-                {
-                    const float s = mono[(size_t) i] * 32768.f;
-                    float& l = fxL[(size_t) (pos + i)]; float& r = fxR[(size_t) (pos + i)];
-                    l = std::clamp (l + std::trunc (s * pl), -32768.f, 32767.f);
-                    r = std::clamp (r + std::trunc (s * pr), -32768.f, 32767.f);
-                }
+                float* L = busL[o - 2].data() + pos;
+                float* R = busR[o - 2].data() + pos;
+                for (int i = 0; i < len; ++i) { L[i] += mono[(size_t) i] * pl; R[i] += mono[(size_t) i] * pr; }
             }
             else
             {
@@ -460,13 +452,15 @@ void Engine::process (float* aL, float* aR, float* bL, float* bR, int n, const T
     }
     renderSegment (pos, n - pos);
 
-    // FX bus
-    if (globals.fx.type != FxType::Off || std::any_of (voices.begin(), voices.end(), [] (const Voice& v) { return v.output() == 2; }))
+    // FX rack: the two FX buses (always run, so reverb and delay tails ring out), then Master on output A
+    for (int k = 0; k < 2; ++k)
     {
-        float* L = (globals.fxOutput == 1 && bL != nullptr) ? bL : aL;
-        float* R = (globals.fxOutput == 1 && bR != nullptr) ? bR : aR;
-        fxBus.process (fxL.data(), fxR.data(), L, R, n);
+        rack.process (k, busL[k].data(), busR[k].data(), n);
+        float* L = (rack.output (k) == 1 && bL != nullptr) ? bL : aL;
+        float* R = (rack.output (k) == 1 && bR != nullptr) ? bR : aR;
+        for (int i = 0; i < n; ++i) { L[i] += busL[k][(size_t) i]; R[i] += busR[k][(size_t) i]; }
     }
+    rack.process (fx::kMasterBus, aL, aR, n);
 
     const float g = globals.master;
     for (int i = 0; i < n; ++i) { aL[i] *= g; aR[i] *= g; }

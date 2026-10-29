@@ -17,7 +17,7 @@ const char* const kTransientNames[14] = { "Snap", "Offset", "Click", "Click 2", 
 const char* const kLfoWaveNames[8]   = { "Sine", "Tri", "Saw Up", "Saw Down", "Square", "Random", "Exp Up", "Exp Down" };
 const char* const kSyncNames[12]     = { "Free", "4/1", "2/1", "1/1", "1/2", "1/3", "1/4", "1/6", "1/8", "1/12", "1/16", "1/32" };
 static const char* const kFmModeNames[2] = { "FM", "Mix" };
-static const char* const kOutputNames[3] = { "A", "B", "FX" };
+static const char* const kOutputNames[4] = { "A", "B", "FX 1", "FX 2" };
 static const char* const kOnOff[2]       = { "Off", "On" };
 static const char* const kRetrigNames[9] = { "Free", "Ch 1", "Ch 2", "Ch 3", "Ch 4", "Ch 5", "Ch 6", "Ch 7", "Ch 8" };
 
@@ -90,7 +90,7 @@ static const ParamDef* defs()
     d[P_DECIMATE]     = C ("decimate", "Sample Rate", "Rate", 1.0f);
     d[P_LEVEL]        = C ("level", "Level", "Level", 0.8f);
     d[P_PAN]          = C ("pan", "Pan", "Pan", 0.5f);
-    d[P_OUTPUT]       = L ("output", "Output", "Output", 3, kOutputNames, 0, false);
+    d[P_OUTPUT]       = L ("output", "Output", "Output", 4, kOutputNames, 0, false);
     d[P_CHOKE]        = L ("choke", "Choke", "Choke", 2, kOnOff, 0, false);
     d[P_VEL_VOL]      = C ("velVol", "Velocity > Level", "Vel>Lvl", 0.4f);
     d[P_VEL_AMT]      = C ("velAmt", "Velocity Mod Amount", "Vel Amt", 0.0f);

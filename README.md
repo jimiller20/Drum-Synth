@@ -65,12 +65,54 @@ the **▾ Dice settings** pop-over:
   roll. Pattern panel: the dice tool rolls the selected channel's steps (Shift: whole beat); the
   dice next to the expression tabs rolls only the shown lane.
 
+## FX rack (added Oct 29 2026)
+
+The **FX RACK** tab (or the Tab key, or a bus card in the bottom bar) replaces the old single FX
+bus. There are three buses: **FX 1** and **FX 2** (a channel plays through one when its Output is
+set to FX 1 / FX 2, or with the channel numbers in the bus header) and **Master** (processes
+everything on output A). Each bus has three **lanes in parallel**, each a chain of five **slots in
+series**, plus Dry, Output gain and a destination (A or B). Drag cards to reorder (Alt-drag
+copies), right-click for more, the power icon bypasses. **Chains** has ready-made setups (Brut
+Crunch, Brut Scream, Germanium Punch, Amp + Cab, Bass Rig, Lo-Fi Radio, Tape Glue, Parallel
+Smash, Dirt + Space, Dub Echo, Spring Tank, Big Hall, Ensemble Wash, Ladder Sweep; Master: Drum
+Bus, Analog Master, Crunch Master); **Roll Chain** builds a random one (series insert, parallel
+dirt + space, or space send; gentle chains for the master).
+
+Modules (`Source/fx`): **Ferric** (vintage saturation after Felt Instruments' Brut: six preamp
+characters - Glow, Lab, Dark, Meter, Germanium, Soviet - a resonant high-pass or band-pass filter
+inside a feedback loop from output to input, tilt EQ last, 2x oversampled), **Amp** (1-3 triode
+stages, tone stack, sagging power amp), **Cabinet** (7 cabinets, mic edge / distance), **Tape**
+(saturation with bias, head bump, wow, flutter, hiss, age), **Glue** (bus compressor), **Shaper**
+(transients), **Ladder** (4-pole ZDF, drive, envelope follower), **Program EQ** (passive
+boost/attenuate), **Echo** (bucket-brigade, tempo sync, ping-pong), **Reverb** (8-line FDN: plate,
+room, hall, ambience), **Spring**, **Chorus** (I, II, I+II, Ensemble), **Crusher**, **Utility**,
+and the four original LXR-02 effects. Modules are swapped without allocating on the audio thread
+(atomic hand-over, deleted later on the message thread). An empty bus passes its input through
+untouched, so the LXR voices stay bit-identical. Old presets convert automatically: their FX bus
+becomes FX 1 with the matching LXR module, Output "FX" becomes FX 1.
+
+## Sound dice: morph ends, genres, cymbals (added Oct 29 2026)
+
+- Every sound dice (channel dice, Random ▾, Alter, Sounds, All) writes the **morph end the Sound
+  Morph slider is nearest to** (A below 50 %, B from 50 %); the other end keeps its sound. Roll at
+  A, move the slider to B, roll again, and the slider morphs between two random sounds. A sound
+  with a different voice model goes to both ends.
+- **Genres**: House, Techno, Drum & Bass, Jungle, Trap, Boom Bap, Lo-Fi, Electro, UK Garage,
+  Dubstep, Industrial, Dembow, Footwork. The channel's Random ▾ menu offers "Random snare in the
+  style of ..." for the channel's role, and every kind of sound by genre; the Dice panel's
+  **Genre** (default: follow the beat style) shapes the Sounds / All rolls and the dice button.
+- **Curated cymbals**: Crash, Ride, Splash, China, 808 Cymbal, Bell - each with its own carrier /
+  modulator ratios, filter and decay ranges, checked for a dense metallic spectrum (no single
+  whistling partial, no low rumble).
+- **Vary** (FEEL group) now also changes cymbals and hi-hats on every hit: random modulator
+  phases, slight modulator detune and FM depth, so no two hits sound the same.
+
 ## Status (handoff, Oct 28 2026)
 
 Done and tested on Linux (Windows build not yet tried):
 - **DSP port** (`Source/dsp`): drum / snare / cymbal / hi-hat voices, wavetable + FM + PWM oscillators,
-  ZDF filter (7 types), slope/decay/snap envelopes, 14 transients, LFO, velocity mod, FX bus
-  (tube/fold/rat distortion, ring mod, compressor, ping-pong delay). Verified against the original
+  ZDF filter (7 types), slope/decay/snap envelopes, 14 transients, LFO, velocity mod, the LXR FX
+  effects (tube/fold/rat distortion, ring mod, compressor, ping-pong delay; now rack modules). Verified against the original
   firmware code compiled on the host: 25 scenarios match within 0-3 LSB of 32768
   (`tests/firmware_compare/build_and_run.sh <path-to-lxr-desktop-app>`).
 - **Engine / sequencer** (`Source/engine`): host-synced pattern engine, synced and immediate
@@ -78,9 +120,9 @@ Done and tested on Linux (Windows build not yet tried):
   C2-G2 mute, C3-B3 patterns, C4 stop), pitched mode, pattern launch modes, MIDI out.
 - **Randomizer**: per-sound recipes (kick, tom, perc, zap, snare, clap, hats, cymbal, chaos),
   alter, randomize all, random morph targets, rhythm-aware pattern randomizer.
-- **Plugin**: 403 host parameters, morph A/B end points, presets (.f8preset), drum patches
+- **Plugin**: 392 host parameters (the FX rack is saved with presets, not as host parameters), morph A/B end points, presets (.f8preset), drum patches
   (.f8drum), undo/redo (40), MIDI-file export + drag-out, WAV export, 5 factory kits.
-- **UI**: all sections working, zoom 60-200%. Snapshots look right.
+- **UI**: all sections working, DRUMS and FX RACK tabs, zoom 60-200%. Snapshots look right.
 - Tests: `tests/engine_identity.cpp` (the sequencer plays the LXR voices bit-identically when expression and feel are off; build line at the top of the file), `tests/render_test.cpp` (engine), `tests/plugin_tests.cpp` (processor + UI snapshots,
   build with `-DFERRUM_BUILD_TESTS=ON`) - all passing.
 

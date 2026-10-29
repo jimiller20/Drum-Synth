@@ -119,9 +119,10 @@ int main (int argc, char** argv)
         auto e2 = std::make_unique<Engine>();
         e2->prepare (sr, 512);
         e2->patterns.set (0, pb.get (0));
-        e2->setPatchParam (3, P_OUTPUT, choiceValue (2, 3));
-        Globals g2 = g; g2.fx.type = FxType::Delay; g2.fx.dryWet = 0.4f; g2.fx.p[0] = 0.6f; g2.fx.p[1] = 1.0f; g2.fx.p[3] = 0.5f;
-        e2->setGlobals (g2);
+        e2->setPatchParam (3, P_OUTPUT, choiceValue (2, paramDef (P_OUTPUT).numChoices));
+        FxSettings fs; fs.type = FxType::Delay; fs.dryWet = 0.4f; fs.p[0] = 0.6f; fs.p[1] = 1.0f; fs.p[3] = 0.5f;
+        e2->rack.setState (fx::FxRack::fromLegacy (fs, 0));
+        e2->setGlobals (g);
         Transport none; none.hostHasTransport = false;
         render (*e2, sr, 4.0, none, L, R);
         const Stats s2 = stats (L, R);
@@ -138,7 +139,8 @@ int main (int argc, char** argv)
         for (int c = 0; c < kNumChannels; ++c)
             for (int p = 0; p < NUM_PATCH_PARAMS; ++p) e->setPatchParam (c, p, kit.a[(size_t) c][(size_t) p]);
         for (int p = 0; p < kNumPatterns; ++p) e->patterns.set (p, kit.patterns[(size_t) p], true);
-        Globals g; g.playOn = true; g.swing = kit.swing; g.fillRate = kit.fillRate; g.rate = kit.rate; g.fx = kit.fx;
+        Globals g; g.playOn = true; g.swing = kit.swing; g.fillRate = kit.fillRate; g.rate = kit.rate;
+        e->rack.setState (kit.rack);
         e->setGlobals (g);
         Transport t; t.hostHasTransport = true; t.hostPlaying = true; t.bpm = 124;
         std::vector<float> L, R;

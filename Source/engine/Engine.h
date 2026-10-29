@@ -1,9 +1,10 @@
 // Engine.h - the complete instrument without any framework: 8 LXR voices, choke groups, mutes,
-// two stereo outputs + FX bus, MIDI input mapping and the Microtonic-style pattern sequencer.
+// two stereo outputs, the modular FX rack, MIDI input mapping and the Microtonic-style pattern sequencer.
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include "../dsp/LxrVoice.h"
 #include "../dsp/FxBus.h"
+#include "../fx/FxRack.h"
 #include "Patterns.h"
 #include "Groove.h"
 #include <atomic>
@@ -46,8 +47,6 @@ struct Globals
     float master = 1.f;              // linear gain
     double tempo = 120.0;            // used when the host gives none
     bool mutes[kNumChannels] {};
-    FxSettings fx;
-    int fxOutput = 0;                // 0 = A, 1 = B
 };
 
 class Engine
@@ -72,6 +71,7 @@ public:
     void requestImmediateStop() { immediateStop.store (true); }
 
     PatternBank patterns;
+    fx::FxRack rack;            // FX 1, FX 2 and Master buses (edit from the message thread)
 
     // state published for the UI
     std::atomic<int> uiPlayingPattern { 0 }, uiStep { -1 }, uiState { 0 }, uiSelectedPattern { 0 };
@@ -98,7 +98,6 @@ private:
     bool isMuted (int ch) const { return globals.mutes[ch] || midiMute[ch]; }
 
     std::array<Voice, kNumChannels> voices;
-    FxBus fxBus;
     Globals globals;
     MidiConfig midiCfg;
     double sr = 44100.0;
@@ -136,7 +135,7 @@ private:
     std::atomic<int> previewWrite { 0 }, previewRead { 0 };
 
     // scratch
-    std::vector<float> mono, fxL, fxR;
+    std::vector<float> mono, busL[2], busR[2];
     std::vector<Trig> trigs;
     long long sampleClock = 0;
     long long lastChokeTriggerSample = -1;

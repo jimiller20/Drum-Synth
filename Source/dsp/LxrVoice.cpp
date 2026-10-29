@@ -178,6 +178,23 @@ void Voice::trigger (float velocity01, int note, const Articulation& art)
         filterOff += vary * 0.12f * bip();
         gainDb += vary * 1.5f * bip();
     }
+    // metals (cymbal, hi-hat): with Vary, every hit strikes the metal a little differently - the
+    // modulators drift against the carrier, their FM depth changes and (below) they start at random
+    // phases, so the partials and the wash differ from hit to hit like a real cymbal
+    const bool metal = currentModel == Model::Cymbal || currentModel == Model::HiHat;
+    float modDetune = 0.f, mod2Detune = 0.f, modDepth = 0.f, mod2Depth = 0.f;
+    if (vary > 0.f && metal)
+    {
+        modDetune = vary * (0.9f / 127.f) * bip();   // up to +-0.9 semitone
+        mod2Detune = vary * (0.9f / 127.f) * bip();
+        modDepth = vary * 0.12f * bip();
+        mod2Depth = vary * 0.12f * bip();
+    }
+    setHitOffset (P_MOD_COARSE, modDetune);
+    setHitOffset (P_MOD2_COARSE, mod2Detune);
+    setHitOffset (P_MOD_GAIN, modDepth);
+    setHitOffset (P_MOD2_GAIN, mod2Depth);
+
     hitGain = gainDb == 0.f ? 1.f : std::pow (10.f, gainDb / 20.f);
     shelfG = toneDb == 0.f ? 1.f : std::pow (10.f, std::clamp (toneDb, -24.f, 9.f) / 20.f);
     rampInc = attMs > 0.f ? (float) (1.0 / (attMs * 0.001 * sr)) : 0.f;
@@ -210,6 +227,7 @@ void Voice::trigger (float velocity01, int note, const Articulation& art)
         case Model::HiHat:
         default:
             modOsc.phase = 0; modOsc2.phase = 0;
+            if (vary > 0.f) { modOsc.phase = hitRng.next(); modOsc2.phase = hitRng.next(); }
             osc.setBaseNote (note); modOsc.setBaseNote (note); modOsc2.setBaseNote (note);
             break;
     }

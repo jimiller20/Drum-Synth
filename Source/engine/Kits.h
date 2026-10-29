@@ -19,8 +19,7 @@ struct KitData
     std::array<PatternData, kNumPatterns> patterns;
     StepRate rate = StepRate::Sixteenth;
     float swing = 0.f, fillRate = 2.f, morph = 0.f;
-    FxSettings fx;
-    int fxOutput = 0;
+    fx::RackState rack;                              // FX 1, FX 2 and Master (empty = no effects)
 };
 
 KitData initKit();                      // the LXR-02 init kit mapped onto eight channels

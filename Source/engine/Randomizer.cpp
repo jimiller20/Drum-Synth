@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "Randomizer.h"
 #include "../dsp/LxrCore.h"
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 
 namespace ferrum
 {
@@ -12,6 +14,9 @@ const char* const kBeatStyleNames[(int) BeatStyle::Count] = { "Auto", "House / T
                                                               "Dembow", "Electro", "Footwork", "Euclidean", "Glitch" };
 const char* const kKitCharacterNames[(int) KitCharacter::Count] = { "Auto", "Clean", "Analog", "Gritty", "Lo-Fi", "Metallic" };
 const char* const kKeyNames[12] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+const char* const kGenreNames[(int) Genre::Count] = { "Any", "House", "Techno", "Drum & Bass", "Jungle", "Trap", "Boom Bap", "Lo-Fi",
+                                                      "Electro", "UK Garage", "Dubstep", "Industrial", "Dembow", "Footwork" };
+const char* const kCymbalTypeNames[(int) CymbalType::Count] = { "Crash", "Ride", "Splash", "China", "808 Cymbal", "Bell" };
 
 Randomizer::Randomizer()
     : rng ((uint32_t) std::chrono::high_resolution_clock::now().time_since_epoch().count()) {}
@@ -30,8 +35,9 @@ struct Builder
 };
 }
 
-Patch Randomizer::patch (Flavor f, const Patch& current)
+Patch Randomizer::patch (Flavor f, const Patch& current, Genre g)
 {
+    if (f == Flavor::Cymbal) return cymbal (cymbalTypeFor (g), current, g);
     Patch p = defaultPatch (Model::Drum);
     Builder b { p, *this };
     using namespace lxr;
@@ -233,6 +239,7 @@ Patch Randomizer::patch (Flavor f, const Patch& current)
             b.norm (P_VEL_AMT, 0.1f, 0.4f);
         }
         else { b.set (P_VEL_AMT, 0); b.ch (P_VEL_DEST, 0); }
+        if (g != Genre::Any) applyGenre (p, f, g);
     }
 
     // structural settings stay with the channel
@@ -264,7 +271,7 @@ Flavor Randomizer::guessFlavor (const Patch& p)
     }
 }
 
-Patch Randomizer::patchForModel (const Patch& current)
+Patch Randomizer::patchForModel (const Patch& current, Genre g)
 {
     const Model m = (Model) choiceIndex (current[P_MODEL], 4);
     Flavor f = Flavor::Kick;
@@ -276,7 +283,300 @@ Patch Randomizer::patchForModel (const Patch& current)
         case Model::Cymbal: f = Flavor::Cymbal; break;
         default: break;
     }
-    return patch (f, current);
+    return patch (f, current, g);
+}
+
+//==============================================================================================
+// Curated cymbals. The LXR cymbal is one carrier oscillator frequency-modulated by two modulators,
+// then filtered. Metal comes from inharmonic carrier : modulator ratios with a high FM index; a
+// noise modulator adds the wash. Fully random settings mostly give one whistling partial or a
+// low, muddy ring, so each type below keeps its ratios, index, filter and decay in a range that
+// measures like the real thing (dense spectrum, no single dominant partial, nothing below 400 Hz).
+Patch Randomizer::cymbal (CymbalType t, const Patch& current, Genre g)
+{
+    Patch p = defaultPatch (Model::Cymbal);
+    Builder b { p, *this };
+    using namespace lxr;
+    b.ch (P_MODEL, (int) Model::Cymbal);
+    b.ch (P_FM_MODE, 0);
+    b.set (P_ATTACK, 0);
+    b.rnd (P_OSC_FINE, 44, 84);
+    b.set (P_PITCH_AMT, 0);
+    b.ch (P_TRANS_WAVE, 0); b.set (P_TRANS_VOL, 0);
+    const auto rel = [&] (int id, float carrier, float lo, float hi) { b.set (id, std::clamp (carrier + uni (lo, hi), 0.f, 127.f)); };
+    float c = 0;
+    switch (t)
+    {
+        case CymbalType::Crash: // square carrier, square modulator at ~1.4-1.6x, noise wash, bright and long
+            b.ch (P_OSC_WAVE, WAVE_REC); c = uni (74, 88); b.set (P_OSC_COARSE, c);
+            b.ch (P_MOD_WAVE, chance (0.7f) ? WAVE_REC : WAVE_SAW); rel (P_MOD_COARSE, c, 5.6f, 8.4f); b.norm (P_MOD_GAIN, 0.55f, 0.9f);
+            b.ch (P_MOD2_WAVE, WAVE_NOISE); b.rnd (P_MOD2_COARSE, 110, 127); b.norm (P_MOD2_GAIN, 0.2f, 0.5f);
+            b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 70, 90); b.rnd (P_FILTER_RESO, 0, 25);
+            b.rnd (P_DECAY, 78, 90); b.rnd (P_SLOPE, 10, 35);
+            if (chance (0.3f)) { b.ch (P_TRANS_WAVE, 8); b.norm (P_TRANS_VOL, 0.1f, 0.3f); b.rnd (P_TRANS_FREQ, 25, 45); }
+            break;
+        case CymbalType::Ride: // triangle carrier, square modulator at a moderate index: a ping over a quiet wash
+            b.ch (P_OSC_WAVE, WAVE_TRI); c = uni (80, 90); b.set (P_OSC_COARSE, c);
+            b.ch (P_MOD_WAVE, WAVE_REC); rel (P_MOD_COARSE, c, 10.4f, 13.6f); b.norm (P_MOD_GAIN, 0.4f, 0.65f);
+            b.ch (P_MOD2_WAVE, WAVE_NOISE); b.rnd (P_MOD2_COARSE, 105, 127); b.norm (P_MOD2_GAIN, 0.2f, 0.4f);
+            b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 72, 88); b.rnd (P_FILTER_RESO, 5, 25);
+            b.rnd (P_DECAY, 80, 94); b.rnd (P_SLOPE, 30, 60);
+            break;
+        case CymbalType::Splash: // a small, bright, short crash
+            b.ch (P_OSC_WAVE, WAVE_REC); c = uni (82, 96); b.set (P_OSC_COARSE, c);
+            b.ch (P_MOD_WAVE, WAVE_REC); rel (P_MOD_COARSE, c, 5.6f, 8.4f); b.norm (P_MOD_GAIN, 0.5f, 0.85f);
+            b.ch (P_MOD2_WAVE, WAVE_NOISE); b.rnd (P_MOD2_COARSE, 110, 127); b.norm (P_MOD2_GAIN, 0.25f, 0.55f);
+            b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 82, 98); b.rnd (P_FILTER_RESO, 0, 20);
+            b.rnd (P_DECAY, 62, 78); b.rnd (P_SLOPE, 5, 25);
+            break;
+        case CymbalType::China: // trashy: saw carrier, hot square and saw modulators, resonant bandpass, drive
+            b.ch (P_OSC_WAVE, WAVE_SAW); c = uni (76, 86); b.set (P_OSC_COARSE, c);
+            b.ch (P_MOD_WAVE, WAVE_REC); rel (P_MOD_COARSE, c, 4.5f, 7.5f); b.norm (P_MOD_GAIN, 0.8f, 1.0f);
+            b.ch (P_MOD2_WAVE, WAVE_SAW); rel (P_MOD2_COARSE, c, 16.f, 21.f); b.norm (P_MOD2_GAIN, 0.55f, 0.85f);
+            b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 64, 76); b.rnd (P_FILTER_RESO, 25, 45);
+            b.rnd (P_DECAY, 74, 88); b.rnd (P_SLOPE, 15, 35);
+            break;
+        case CymbalType::Cymbal808: // the TR-808 recipe: a cluster of square waves at fixed odd ratios, high-passed
+            b.ch (P_OSC_WAVE, WAVE_REC); c = uni (55, 60); b.set (P_OSC_COARSE, c);
+            b.ch (P_MOD_WAVE, WAVE_REC); rel (P_MOD_COARSE, c, 6.6f, 7.4f); b.norm (P_MOD_GAIN, 0.45f, 0.7f);
+            b.ch (P_MOD2_WAVE, WAVE_REC); rel (P_MOD2_COARSE, c, 15.8f, 16.6f); b.norm (P_MOD2_GAIN, 0.35f, 0.6f);
+            b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 92, 108); b.rnd (P_FILTER_RESO, 0, 20);
+            b.rnd (P_DECAY, 72, 90); b.rnd (P_SLOPE, 10, 30);
+            break;
+        case CymbalType::Bell: // ride bell / ping: sine FM at ~2.6x with a low index, few partials
+        default:
+            b.ch (P_OSC_WAVE, WAVE_SINE); c = uni (74, 88); b.set (P_OSC_COARSE, c);
+            b.ch (P_MOD_WAVE, WAVE_SINE); rel (P_MOD_COARSE, c, 15.5f, 17.f); b.norm (P_MOD_GAIN, 0.28f, 0.5f);
+            b.ch (P_MOD2_WAVE, WAVE_SINE); rel (P_MOD2_COARSE, c, 27.f, 29.5f); b.norm (P_MOD2_GAIN, 0.12f, 0.3f);
+            if (chance (0.6f)) { b.ch (P_FILTER_TYPE, 2); b.rnd (P_FILTER_FREQ, 85, 105); b.rnd (P_FILTER_RESO, 5, 25); }
+            else { b.ch (P_FILTER_TYPE, 0); b.rnd (P_FILTER_FREQ, 100, 120); b.rnd (P_FILTER_RESO, 0, 15); }
+            b.rnd (P_DECAY, 55, 75); b.rnd (P_SLOPE, 25, 50);
+            break;
+    }
+    b.rnd (P_DRIVE, t == CymbalType::China ? 75 : 35, t == CymbalType::China ? 100 : 70);
+    b.set (P_DECIMATE, 127);
+    b.norm (P_LEVEL, 0.68f, 0.82f);
+    b.norm (P_PAN, 0.35f, 0.65f);
+    b.norm (P_VEL_VOL, 0.3f, 0.6f);
+    b.set (P_LFO_AMT, 0); b.ch (P_LFO_DEST, 0); b.set (P_VEL_AMT, 0); b.ch (P_VEL_DEST, 0);
+    // genre texture
+    switch (g)
+    {
+        case Genre::Jungle: case Genre::BoomBap: b.rnd (P_DECIMATE, 80, 108); break;
+        case Genre::LoFi: b.rnd (P_DECIMATE, 62, 92); b.p[P_FILTER_FREQ] = std::max (0.f, b.p[P_FILTER_FREQ] - uni (0.02f, 0.08f)); break;
+        case Genre::Industrial: b.rnd (P_DRIVE, 105, 127); if (chance (0.4f)) b.rnd (P_DECIMATE, 70, 105); break;
+        case Genre::Trap: case Genre::Garage: b.p[P_DECAY] = std::max (0.f, b.p[P_DECAY] - uni (0.03f, 0.08f)); break;
+        default: break;
+    }
+    p[P_OUTPUT] = current[P_OUTPUT];
+    p[P_CHOKE] = current[P_CHOKE];
+    p[P_LFO_RETRIG] = current[P_LFO_RETRIG];
+    for (int i = 0; i < NUM_PATCH_PARAMS; ++i) if (isFeelParam (i)) p[(size_t) i] = current[(size_t) i];
+    return p;
+}
+
+CymbalType Randomizer::cymbalTypeFor (Genre g)
+{
+    // weights: crash, ride, splash, china, 808, bell
+    static const float w[(int) Genre::Count][6] = {
+        { 25, 25, 15, 10, 15, 10 },  // Any
+        { 30, 40, 10,  0, 20,  0 },  // House (909 ride and crash)
+        { 20, 50,  0, 10,  0, 20 },  // Techno
+        { 25, 55, 15,  5,  0,  0 },  // Drum & Bass
+        { 45, 35, 10, 10,  0,  0 },  // Jungle
+        { 40,  0, 20,  0, 40,  0 },  // Trap
+        { 40, 40, 20,  0,  0,  0 },  // Boom Bap
+        { 30, 50,  0,  0,  0, 20 },  // Lo-Fi
+        { 20,  0,  0,  0, 70, 10 },  // Electro
+        { 30, 40, 30,  0,  0,  0 },  // UK Garage
+        { 50, 20,  0, 30,  0,  0 },  // Dubstep
+        { 20,  0,  0, 50,  0, 30 },  // Industrial
+        { 40,  0, 30,  0, 30,  0 },  // Dembow
+        { 30,  0,  0,  0, 50, 20 },  // Footwork
+    };
+    const auto& row = w[std::clamp ((int) g, 0, (int) Genre::Count - 1)];
+    float total = 0; for (float x : row) total += x;
+    float r = uni (0.f, total);
+    for (int i = 0; i < 6; ++i) { if (r < row[i]) return (CymbalType) i; r -= row[i]; }
+    return CymbalType::Crash;
+}
+
+Genre Randomizer::genreFor (const DiceSettings& s)
+{
+    if (s.genre >= 0) return (Genre) std::clamp (s.genre, 0, (int) Genre::Count - 1);
+    switch (s.style)
+    {
+        case BeatStyle::House:     return chance (0.5f) ? Genre::House : Genre::Techno;
+        case BeatStyle::Breakbeat: return chance (0.5f) ? Genre::BoomBap : Genre::Jungle;
+        case BeatStyle::DnB:       return chance (0.75f) ? Genre::DnB : Genre::Jungle;
+        case BeatStyle::Trap:      return Genre::Trap;
+        case BeatStyle::Dembow:    return Genre::Dembow;
+        case BeatStyle::Electro:   return Genre::Electro;
+        case BeatStyle::Footwork:  return Genre::Footwork;
+        default:                   return Genre::Any;
+    }
+}
+
+// Genre ranges in LXR units (0..127) on top of a flavor's recipe. Only what defines the genre is
+// set; the rest of the recipe's randomness stays, so two DnB snares still differ.
+void Randomizer::applyGenre (Patch& p, Flavor f, Genre g)
+{
+    Builder b { p, *this };
+    using namespace lxr;
+    const auto trans = [&] (int wave, float volLo, float volHi, float fLo = 20, float fHi = 70)
+    {
+        b.ch (P_TRANS_WAVE, wave); b.norm (P_TRANS_VOL, volLo, volHi); b.rnd (P_TRANS_FREQ, fLo, fHi);
+    };
+    const auto clean = [&] { b.set (P_DECIMATE, 127); };
+    switch (f)
+    {
+        case Flavor::Kick:
+            b.ch (P_FM_MODE, 0);
+            switch (g)
+            {
+                case Genre::House:   b.ch (P_OSC_WAVE, WAVE_SINE); b.rnd (P_OSC_COARSE, 27, 33); b.rnd (P_PITCH_AMT, 50, 70); b.rnd (P_PITCH_DECAY, 10, 22);
+                                     b.rnd (P_DECAY, 20, 34); b.rnd (P_SLOPE, 40, 70); b.rnd (P_DRIVE, 55, 80); trans (2, 0.2f, 0.45f); clean(); break;
+                case Genre::Techno:  b.ch (P_OSC_WAVE, chance (0.7f) ? WAVE_SINE : WAVE_TRI); b.rnd (P_OSC_COARSE, 24, 30); b.rnd (P_PITCH_AMT, 45, 65);
+                                     b.rnd (P_PITCH_DECAY, 12, 25); b.rnd (P_DECAY, 28, 48); b.rnd (P_SLOPE, 50, 90); b.rnd (P_DRIVE, 85, 115);
+                                     b.ch (P_FILTER_TYPE, 0); b.rnd (P_FILTER_FREQ, 90, 115); b.rnd (P_FILTER_DRIVE, 30, 70); trans (chance (0.5f) ? 10 : 2, 0.25f, 0.5f); clean(); break;
+                case Genre::DnB:     b.ch (P_OSC_WAVE, WAVE_SINE); b.rnd (P_OSC_COARSE, 29, 35); b.rnd (P_PITCH_AMT, 55, 80); b.rnd (P_PITCH_DECAY, 6, 14);
+                                     b.rnd (P_DECAY, 12, 22); b.rnd (P_SLOPE, 30, 60); b.rnd (P_DRIVE, 70, 100); trans (chance (0.5f) ? 0 : 2, 0.4f, 0.7f, 40, 80); clean(); break;
+                case Genre::Jungle:  b.ch (P_OSC_WAVE, WAVE_SINE); b.rnd (P_OSC_COARSE, 25, 31); b.rnd (P_PITCH_AMT, 35, 55); b.rnd (P_PITCH_DECAY, 14, 30);
+                                     b.rnd (P_DECAY, 20, 36); b.rnd (P_DRIVE, 60, 90); b.rnd (P_DECIMATE, 85, 110); b.ch (P_FILTER_TYPE, 0); b.rnd (P_FILTER_FREQ, 85, 110); break;
+                case Genre::Trap:    b.ch (P_OSC_WAVE, WAVE_SINE); b.rnd (P_OSC_COARSE, 22, 28); b.rnd (P_PITCH_AMT, 30, 55); b.rnd (P_PITCH_DECAY, 18, 40);
+                                     b.rnd (P_DECAY, 60, 100); b.rnd (P_SLOPE, 60, 110); b.rnd (P_DRIVE, 70, 110); trans (chance (0.5f) ? 5 : 2, 0.15f, 0.4f); clean(); break;
+                case Genre::BoomBap: b.ch (P_OSC_WAVE, chance (0.7f) ? WAVE_SINE : WAVE_TRI); b.rnd (P_OSC_COARSE, 26, 32); b.rnd (P_PITCH_AMT, 40, 60);
+                                     b.rnd (P_PITCH_DECAY, 10, 20); b.rnd (P_DECAY, 18, 30); b.rnd (P_DRIVE, 65, 95); b.rnd (P_DECIMATE, 80, 105);
+                                     b.ch (P_FILTER_TYPE, 0); b.rnd (P_FILTER_FREQ, 80, 105); trans (5, 0.3f, 0.6f); break;
+                case Genre::LoFi:    b.ch (P_OSC_WAVE, WAVE_SINE); b.rnd (P_OSC_COARSE, 26, 32); b.rnd (P_DECAY, 16, 28); b.rnd (P_DECIMATE, 60, 95);
+                                     b.ch (P_FILTER_TYPE, 0); b.rnd (P_FILTER_FREQ, 60, 90); b.rnd (P_DRIVE, 45, 70); trans (5, 0.f, 0.2f); break;
+                case Genre::Electro: b.ch (P_OSC_WAVE, WAVE_SINE); b.rnd (P_OSC_COARSE, 25, 31); b.rnd (P_PITCH_AMT, 35, 55); b.rnd (P_PITCH_DECAY, 14, 28);
+                                     b.rnd (P_DECAY, 35, 60); b.rnd (P_SLOPE, 40, 80); b.rnd (P_DRIVE, 50, 80); trans (3, 0.2f, 0.4f); clean(); break;
+                case Genre::Garage:  b.ch (P_OSC_WAVE, WAVE_SINE); b.rnd (P_OSC_COARSE, 28, 34); b.rnd (P_PITCH_AMT, 50, 75); b.rnd (P_PITCH_DECAY, 8, 16);
+                                     b.rnd (P_DECAY, 14, 24); b.rnd (P_DRIVE, 55, 85); trans (2, 0.3f, 0.5f); clean(); break;
+                case Genre::Dubstep: b.ch (P_OSC_WAVE, WAVE_SINE); b.rnd (P_OSC_COARSE, 25, 31); b.rnd (P_PITCH_AMT, 60, 90); b.rnd (P_PITCH_DECAY, 10, 20);
+                                     b.rnd (P_DECAY, 24, 40); b.rnd (P_DRIVE, 95, 125); b.ch (P_FILTER_TYPE, 0); b.rnd (P_FILTER_FREQ, 100, 127);
+                                     b.rnd (P_FILTER_DRIVE, 40, 80); trans (10, 0.4f, 0.7f); clean(); break;
+                case Genre::Industrial: b.ch (P_OSC_WAVE, chance (0.5f) ? WAVE_TRI : WAVE_SAW); b.rnd (P_OSC_COARSE, 24, 32); b.rnd (P_PITCH_AMT, 60, 100);
+                                     b.rnd (P_DECAY, 20, 45); b.rnd (P_DRIVE, 110, 127); b.rnd (P_DECIMATE, 70, 110); b.ch (P_FILTER_TYPE, 0);
+                                     b.rnd (P_FILTER_FREQ, 70, 100); b.rnd (P_FILTER_RESO, 30, 70); b.rnd (P_FILTER_DRIVE, 60, 110); trans (2, 0.3f, 0.6f); break;
+                case Genre::Dembow:  b.ch (P_OSC_WAVE, WAVE_SINE); b.rnd (P_OSC_COARSE, 27, 33); b.rnd (P_PITCH_AMT, 45, 65); b.rnd (P_PITCH_DECAY, 12, 22);
+                                     b.rnd (P_DECAY, 22, 36); b.rnd (P_DRIVE, 60, 90); trans (2, 0.25f, 0.45f); clean(); break;
+                case Genre::Footwork: b.ch (P_OSC_WAVE, WAVE_SINE); b.rnd (P_OSC_COARSE, 22, 28); b.rnd (P_PITCH_AMT, 30, 50); b.rnd (P_PITCH_DECAY, 20, 40);
+                                     b.rnd (P_DECAY, 55, 90); b.rnd (P_DRIVE, 60, 90); clean(); break;
+                default: break;
+            }
+            break;
+        case Flavor::Snare:
+            switch (g)
+            {
+                case Genre::House:   b.ch (P_OSC_WAVE, WAVE_TRI); b.rnd (P_OSC_COARSE, 47, 54); b.rnd (P_NOISE_MIX, 60, 85); b.rnd (P_NOISE_FREQ, 110, 127);
+                                     b.rnd (P_PITCH_AMT, 35, 60); b.rnd (P_PITCH_DECAY, 8, 16); b.rnd (P_DECAY, 12, 20); b.rnd (P_SLOPE, 15, 35);
+                                     b.ch (P_FILTER_TYPE, 0); b.rnd (P_FILTER_FREQ, 100, 127); trans (11, 0.2f, 0.4f); b.rnd (P_DRIVE, 55, 80); clean(); break;
+                case Genre::Techno:  b.ch (P_OSC_WAVE, chance (0.5f) ? WAVE_TRI : WAVE_SINE); b.rnd (P_OSC_COARSE, 44, 52); b.rnd (P_NOISE_MIX, 55, 80);
+                                     b.rnd (P_DECAY, 14, 26); b.ch (P_FILTER_TYPE, 2); b.rnd (P_FILTER_FREQ, 60, 85); b.rnd (P_FILTER_RESO, 10, 30);
+                                     b.rnd (P_DRIVE, 80, 110); clean(); break;
+                case Genre::DnB:     // tight, high-tuned body, bright noise, a hard crack on top
+                                     b.ch (P_OSC_WAVE, chance (0.6f) ? WAVE_TRI : WAVE_SINE); b.rnd (P_OSC_COARSE, 55, 62); b.rnd (P_OSC_FINE, 50, 78);
+                                     b.rnd (P_NOISE_MIX, 55, 80); b.rnd (P_NOISE_FREQ, 115, 127); b.rnd (P_PITCH_AMT, 40, 70); b.rnd (P_PITCH_DECAY, 4, 10);
+                                     b.rnd (P_DECAY, 8, 15); b.rnd (P_SLOPE, 10, 30);
+                                     if (chance (0.6f)) { b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 30, 55); } else { b.ch (P_FILTER_TYPE, 0); b.rnd (P_FILTER_FREQ, 110, 127); }
+                                     b.rnd (P_FILTER_RESO, 0, 20);
+                                     if (chance (0.6f)) trans (0, 0.45f, 0.8f, 60, 100); else trans (chance (0.5f) ? 6 : 11, 0.35f, 0.65f);
+                                     b.rnd (P_DRIVE, 75, 105); clean(); break;
+                case Genre::Jungle:  // Amen-flavoured: ringier mid body, bandpassed, a little crunchy
+                                     b.ch (P_OSC_WAVE, WAVE_TRI); b.rnd (P_OSC_COARSE, 49, 56); b.rnd (P_NOISE_MIX, 50, 72); b.rnd (P_NOISE_FREQ, 95, 120);
+                                     b.rnd (P_PITCH_AMT, 30, 55); b.rnd (P_DECAY, 13, 22); b.rnd (P_SLOPE, 20, 45); b.ch (P_FILTER_TYPE, 2);
+                                     b.rnd (P_FILTER_FREQ, 70, 95); b.rnd (P_FILTER_RESO, 10, 35); b.rnd (P_DECIMATE, 75, 105); b.rnd (P_DRIVE, 70, 100);
+                                     trans (11, 0.3f, 0.6f); break;
+                case Genre::Trap:    b.ch (P_OSC_WAVE, chance (0.5f) ? WAVE_TRI : WAVE_SINE); b.rnd (P_OSC_COARSE, 50, 58); b.rnd (P_NOISE_MIX, 70, 100);
+                                     b.rnd (P_NOISE_FREQ, 115, 127); b.rnd (P_PITCH_AMT, 30, 55); b.rnd (P_PITCH_DECAY, 6, 14); b.rnd (P_DECAY, 10, 18);
+                                     b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 35, 60); trans (chance (0.5f) ? 9 : 0, 0.3f, 0.6f);
+                                     if (chance (0.35f)) { b.rnd (P_ATTACK, 3, 7); p[P_REPEAT] = std::sqrt ((float) irange (1, 2) / 127.f); }
+                                     b.rnd (P_DRIVE, 60, 90); clean(); break;
+                case Genre::BoomBap: b.ch (P_OSC_WAVE, WAVE_TRI); b.rnd (P_OSC_COARSE, 44, 51); b.rnd (P_NOISE_MIX, 50, 75); b.rnd (P_NOISE_FREQ, 95, 120);
+                                     b.rnd (P_PITCH_AMT, 30, 50); b.rnd (P_DECAY, 14, 24); b.rnd (P_SLOPE, 25, 50); b.ch (P_FILTER_TYPE, 0);
+                                     b.rnd (P_FILTER_FREQ, 75, 100); b.rnd (P_DECIMATE, 80, 105); b.rnd (P_DRIVE, 70, 100); trans (11, 0.3f, 0.6f); break;
+                case Genre::LoFi:    b.ch (P_OSC_WAVE, WAVE_TRI); b.rnd (P_OSC_COARSE, 44, 52); b.rnd (P_NOISE_MIX, 45, 70); b.rnd (P_NOISE_FREQ, 80, 105);
+                                     b.rnd (P_DECAY, 12, 22); b.ch (P_FILTER_TYPE, 0); b.rnd (P_FILTER_FREQ, 60, 85); b.rnd (P_DECIMATE, 55, 90);
+                                     b.rnd (P_DRIVE, 50, 75); trans (11, 0.1f, 0.35f); break;
+                case Genre::Electro: b.ch (P_OSC_WAVE, WAVE_SINE); b.rnd (P_OSC_COARSE, 50, 56); b.rnd (P_NOISE_MIX, 40, 65); b.rnd (P_NOISE_FREQ, 105, 125);
+                                     b.rnd (P_PITCH_AMT, 20, 40); b.rnd (P_PITCH_DECAY, 6, 12); b.rnd (P_DECAY, 8, 16); b.ch (P_FILTER_TYPE, 1);
+                                     b.rnd (P_FILTER_FREQ, 30, 50); b.rnd (P_DRIVE, 50, 80); trans (0, 0.f, 0.25f); clean(); break;
+                case Genre::Garage:  b.ch (P_OSC_WAVE, WAVE_TRI); b.rnd (P_OSC_COARSE, 54, 60); b.rnd (P_NOISE_MIX, 55, 80); b.rnd (P_DECAY, 8, 14);
+                                     b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 35, 55); trans (6, 0.3f, 0.6f); b.rnd (P_DRIVE, 60, 90); clean(); break;
+                case Genre::Dubstep: b.ch (P_OSC_WAVE, chance (0.5f) ? WAVE_TRI : WAVE_SINE); b.rnd (P_OSC_COARSE, 42, 50); b.rnd (P_NOISE_MIX, 60, 90);
+                                     b.rnd (P_PITCH_AMT, 60, 95); b.rnd (P_PITCH_DECAY, 10, 20); b.rnd (P_DECAY, 18, 30); b.rnd (P_SLOPE, 25, 55);
+                                     b.ch (P_FILTER_TYPE, 0); b.rnd (P_FILTER_FREQ, 95, 127); b.rnd (P_DRIVE, 100, 127); trans (11, 0.5f, 0.8f); clean(); break;
+                case Genre::Industrial: b.ch (P_OSC_WAVE, chance (0.5f) ? WAVE_REC : WAVE_SAW); b.rnd (P_OSC_COARSE, 44, 56); b.rnd (P_NOISE_MIX, 70, 110);
+                                     b.rnd (P_DECAY, 14, 28); b.ch (P_FILTER_TYPE, 2); b.rnd (P_FILTER_FREQ, 60, 90); b.rnd (P_FILTER_RESO, 40, 80);
+                                     b.rnd (P_DRIVE, 110, 127); b.rnd (P_DECIMATE, 60, 100); break;
+                case Genre::Dembow:  b.ch (P_OSC_WAVE, WAVE_TRI); b.rnd (P_OSC_COARSE, 52, 58); b.rnd (P_NOISE_MIX, 50, 75); b.rnd (P_DECAY, 10, 16);
+                                     b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 30, 50); trans (6, 0.4f, 0.7f); clean(); break;
+                case Genre::Footwork: b.ch (P_OSC_WAVE, WAVE_SINE); b.rnd (P_OSC_COARSE, 52, 58); b.rnd (P_NOISE_MIX, 70, 95); b.rnd (P_DECAY, 8, 14);
+                                     b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 35, 55); b.rnd (P_DRIVE, 70, 100); clean(); break;
+                default: break;
+            }
+            break;
+        case Flavor::Clap:
+            switch (g)
+            {
+                case Genre::House: case Genre::Garage: case Genre::Dembow:
+                    p[P_REPEAT] = std::sqrt ((float) irange (3, 4) / 127.f); b.rnd (P_DECAY, 12, 20); b.ch (P_FILTER_TYPE, 2); b.rnd (P_FILTER_FREQ, 60, 80); clean(); break;
+                case Genre::Trap: case Genre::Footwork:
+                    p[P_REPEAT] = std::sqrt ((float) irange (2, 4) / 127.f); b.rnd (P_DECAY, 10, 18); b.ch (P_FILTER_TYPE, 2); b.rnd (P_FILTER_FREQ, 65, 85); clean(); break;
+                case Genre::DnB: case Genre::Techno:
+                    p[P_REPEAT] = std::sqrt ((float) irange (2, 3) / 127.f); b.rnd (P_DECAY, 8, 14); b.rnd (P_DRIVE, 70, 100); clean(); break;
+                case Genre::Electro:
+                    p[P_REPEAT] = std::sqrt ((float) irange (3, 4) / 127.f); b.ch (P_FILTER_TYPE, 2); b.rnd (P_FILTER_FREQ, 55, 70); b.rnd (P_FILTER_RESO, 20, 40); clean(); break;
+                case Genre::BoomBap: case Genre::Jungle: b.rnd (P_DECIMATE, 75, 105); break;
+                case Genre::LoFi: b.rnd (P_DECIMATE, 55, 90); b.ch (P_FILTER_TYPE, 0); b.rnd (P_FILTER_FREQ, 65, 85); break;
+                case Genre::Industrial: case Genre::Dubstep: b.rnd (P_DRIVE, 105, 127); break;
+                default: break;
+            }
+            break;
+        case Flavor::ClosedHat:
+        case Flavor::OpenHat:
+        {
+            const bool closed = f == Flavor::ClosedHat;
+            const auto dec = [&] (float cl, float ch, float ol, float oh) { if (closed) b.rnd (P_DECAY, cl, ch); else b.rnd (P_DECAY, ol, oh); };
+            switch (g)
+            {
+                case Genre::House:   dec (3, 6, 18, 30); b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 95, 112); b.rnd (P_DRIVE, 50, 75); clean(); break;
+                case Genre::Techno:  dec (2, 5, 12, 24); b.ch (P_FILTER_TYPE, chance (0.6f) ? 1 : 2); b.rnd (P_FILTER_FREQ, 100, 118); b.rnd (P_DRIVE, 70, 100); clean(); break;
+                case Genre::DnB:     dec (1.5f, 4, 8, 16); b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 105, 122); clean(); break;
+                case Genre::Jungle:  dec (3, 6, 12, 20); b.ch (P_FILTER_TYPE, 2); b.rnd (P_FILTER_FREQ, 95, 112); b.rnd (P_DECIMATE, 85, 110); break;
+                case Genre::Trap:    dec (1, 3.5f, 10, 20); b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 105, 125); clean(); break;
+                case Genre::BoomBap: dec (3, 7, 14, 24); b.ch (P_FILTER_TYPE, 2); b.rnd (P_FILTER_FREQ, 90, 108); b.rnd (P_DECIMATE, 75, 105); break;
+                case Genre::LoFi:    dec (3, 7, 12, 22); b.ch (P_FILTER_TYPE, 2); b.rnd (P_FILTER_FREQ, 85, 102); b.rnd (P_DECIMATE, 60, 95); break;
+                case Genre::Electro: b.ch (P_OSC_WAVE, WAVE_REC); b.ch (P_MOD_WAVE, WAVE_REC); b.ch (P_MOD2_WAVE, WAVE_REC); b.rnd (P_MOD_GAIN, 80, 127);
+                                     dec (2, 5, 14, 26); b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 98, 115); clean(); break;
+                case Genre::Garage: case Genre::Dembow: case Genre::Footwork:
+                                     dec (2, 4, 10, 18); b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 102, 120); clean(); break;
+                case Genre::Dubstep: dec (2, 5, 12, 22); b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 100, 118); clean(); break;
+                case Genre::Industrial: b.ch (P_MOD2_WAVE, WAVE_NOISE); b.rnd (P_MOD2_GAIN, 100, 127); b.rnd (P_DRIVE, 100, 127); b.rnd (P_DECIMATE, 70, 110);
+                                     dec (2, 6, 12, 26); break;
+                default: break;
+            }
+            break;
+        }
+        case Flavor::Tom:
+        case Flavor::Perc:
+        case Flavor::Zap:
+            switch (g) // texture only: these vary too much between tracks to pin down
+            {
+                case Genre::BoomBap: case Genre::Jungle: b.rnd (P_DECIMATE, 80, 108); break;
+                case Genre::LoFi: b.rnd (P_DECIMATE, 55, 92); b.ch (P_FILTER_TYPE, 0); b.rnd (P_FILTER_FREQ, 65, 95); break;
+                case Genre::Industrial: b.rnd (P_DRIVE, 105, 127); b.rnd (P_FILTER_RESO, 30, 70); break;
+                case Genre::Dubstep: case Genre::Techno: b.rnd (P_DRIVE, 85, 115); clean(); break;
+                case Genre::DnB: case Genre::Garage: b.p[P_DECAY] *= 0.75f; clean(); break;
+                case Genre::Electro: if (f == Flavor::Zap || chance (0.5f)) { b.ch (P_OSC_WAVE, WAVE_SINE); } clean(); break;
+                case Genre::Trap: case Genre::Footwork: if (f == Flavor::Tom) { b.rnd (P_DECAY, 30, 60); b.ch (P_OSC_WAVE, WAVE_SINE); } clean(); break;
+                default: break;
+            }
+            break;
+        default: break;
+    }
 }
 
 Patch Randomizer::alter (const Patch& in, float amount)
@@ -1100,7 +1400,7 @@ void Randomizer::randomizeExpressionLane (PatternData& d, int ch, Flavor role, i
 // Kit sounds
 Patch Randomizer::kitPatch (Flavor f, const Patch& current, const DiceSettings& s)
 {
-    Patch p = patch (f, current);
+    Patch p = patch (f, current, genreFor (s));
     applyCharacter (p, s.character);
     tuneToKey (p, s.key);
     return p;
@@ -1130,6 +1430,7 @@ void Randomizer::applyCharacter (Patch& p, KitCharacter c)
             else b.rnd (P_FILTER_FREQ, 70, 95);
             break;
         case KitCharacter::Metallic:
+            if (m == Model::Cymbal) { b.rnd (P_DRIVE, 60, 95); break; } // the curated cymbals are metallic already
             if (m == Model::Drum)
             {
                 static const int w[] = { WAVE_REC, WAVE_SAW, WAVE_SINE };

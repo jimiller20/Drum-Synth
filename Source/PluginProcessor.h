@@ -52,6 +52,13 @@ public:
     ferrum::Patch getEndA (int ch) const { const juce::ScopedLock sl (stateLock); return chans[(size_t) ch].a; }
     ferrum::Patch getEndB (int ch) const { const juce::ScopedLock sl (stateLock); return chans[(size_t) ch].b; }
     void copyCurrentToBothEnds();
+    // Sound dice on a channel write the morph end the Sound Morph slider is nearest to (A below 50 %,
+    // B from 50 %); the other end keeps its sound. A new model goes to both ends, since the other end
+    // cannot morph into a different voice model. Returns 0 = A, 1 = B, 2 = both.
+    int activeEnd() const { return getMorph() < 0.5f ? 0 : 1; }
+    ferrum::Patch getActiveEnd (int ch) const { return activeEnd() == 0 ? getEndA (ch) : getEndB (ch); }
+    int setPatchAtActiveEnd (int ch, const ferrum::Patch& p);
+    static juce::String endName (int e) { return e == 0 ? "A" : (e == 1 ? "B" : "A + B"); }
     void swapMorphEnds();
     float getMorph() const;
 
@@ -79,6 +86,10 @@ public:
     static juce::File userFolder();
     static juce::File presetFolder() { return userFolder().getChildFile ("Presets"); }
     static juce::File patchFolder() { return userFolder().getChildFile ("Patches"); }
+
+    // FX rack (edited from the FX tab; call pushUndo() before a change, rackChanged() after it)
+    ferrum::fx::FxRack& getRack() { return engine.rack; }
+    void rackChanged() { presetDirty = true; sendUiChange(); }
 
     // channel / pattern operations
     void moveChannel (int from, int to);
@@ -148,9 +159,7 @@ private:
 
     // global parameter raw pointers
     std::atomic<float>* pPlay = nullptr, *pPattern = nullptr, *pRate = nullptr, *pSwing = nullptr, *pFill = nullptr,
-                      *pMaster = nullptr, *pTempo = nullptr, *pMorph = nullptr, *pFxType = nullptr, *pFxMix = nullptr,
-                      *pFxDist = nullptr, *pFxRatio = nullptr, *pFxWave = nullptr, *pFxPing = nullptr, *pFxOut = nullptr;
-    std::array<std::atomic<float>*, 4> pFxP {};
+                      *pMaster = nullptr, *pTempo = nullptr, *pMorph = nullptr;
     std::array<std::atomic<float>*, NC> pMute {};
 
     std::atomic<int> midiLaunch { 0 }, midiPitched { 0 }, midiNoteOff { 0 }, midiTransmit { 1 }, midiBend { 12 };
