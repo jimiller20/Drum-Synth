@@ -32,6 +32,7 @@ public:
     bool chokes() const { return choiceIndex (base[P_CHOKE], 2) == 1; }
     int lfoRetrigSource() const { return choiceIndex (base[P_LFO_RETRIG], 9); } // 0 free, 1..8 ch
     bool isSilent() const { return silent; }
+    bool isFinished() const { return silent && blockPos >= blockLen; } // silent AND the last control block has played out
     float meterLevel() const { return meter; }
 
     void setBpm (double b) { if (b != bpm) { bpm = b; lfo.updateInc (bpm); } }

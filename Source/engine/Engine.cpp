@@ -417,7 +417,7 @@ void Engine::process (float* aL, float* aR, float* bL, float* bR, int n, const T
         for (int c = 0; c < kNumChannels; ++c)
         {
             Voice& v = voices[(size_t) c];
-            if (v.isSilent()) continue;
+            if (v.isFinished()) continue; // only skip once the tail has fully played (the hardware never cuts it)
             v.render (mono.data(), len);
             const float pl = v.panLeft(), pr = v.panRight();
             const int o = v.output();

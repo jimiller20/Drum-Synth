@@ -81,7 +81,7 @@ Done and tested on Linux (Windows build not yet tried):
 - **Plugin**: 403 host parameters, morph A/B end points, presets (.f8preset), drum patches
   (.f8drum), undo/redo (40), MIDI-file export + drag-out, WAV export, 5 factory kits.
 - **UI**: all sections working, zoom 60-200%. Snapshots look right.
-- Tests: `tests/render_test.cpp` (engine), `tests/plugin_tests.cpp` (processor + UI snapshots,
+- Tests: `tests/engine_identity.cpp` (the sequencer plays the LXR voices bit-identically when expression and feel are off; build line at the top of the file), `tests/render_test.cpp` (engine), `tests/plugin_tests.cpp` (processor + UI snapshots,
   build with `-DFERRUM_BUILD_TESTS=ON`) - all passing.
 
 Next steps when picking back up:
