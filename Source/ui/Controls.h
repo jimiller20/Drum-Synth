@@ -34,6 +34,11 @@ public:
     void setLabel (const juce::String& l) { label = l; repaint(); }
     void setAccent (juce::Colour c) { accent = c; repaint(); }
     void setBipolar (bool b) { bipolar = b; repaint(); }
+    // modulation: the range a modulator moves this knob by (signed, 0 = none), drawn as an outer arc
+    void setModRange (float depth) { if (depth != modRange) { modRange = depth; repaint(); } }
+    // extra items in the right-click menu (ids from 1000 up go to onExtendedMenu)
+    std::function<void (juce::PopupMenu&)> extendMenu;
+    std::function<void (int)> onExtendedMenu;
     void setInactive (bool b) { inactive = b; repaint(); }
 
     std::function<void()> onGestureStart;
@@ -57,6 +62,7 @@ private:
     juce::RangedAudioParameter* param = nullptr;
     std::unique_ptr<juce::ParameterAttachment> att;
     Free free;
+    float modRange = 0.f;
     float norm = 0.f, dragStartNorm = 0.f, accumDrag = 0.f;
     int lastY = 0;
     bool dragging = false, hover = false, bipolar = false, inactive = false;

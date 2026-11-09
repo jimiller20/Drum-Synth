@@ -273,7 +273,8 @@ void ChannelStrip::paint (Graphics& g)
         String info = String (kModelNames[(int) m]).toUpperCase();
         if (proc.getPatchValue (ch, P_CHOKE) > 0.5f) info << "  CHOKE";
         const int out = choiceIndex (proc.getPatchValue (ch, P_OUTPUT), paramDef (P_OUTPUT).numChoices);
-        if (out == 1) info << "  OUT B"; else if (out == 2) info << "  > FX 1"; else if (out == 3) info << "  > FX 2";
+        if (out == 1) info << "  OUT B"; else if (out == 2) info << "  > FX 1"; else if (out == 3) info << "  > FX 2"; else if (out == 4) info << "  > OWN";
+        if (proc.getSoundMutation (ch).every > 0) info << "  ~MUT";
         g.drawFittedText (info, t.withTrimmedTop (t.getHeight() / 2 + 1), Justification::topLeft, 1, 0.8f);
 
         auto mb = muteButton (ch).toFloat();

@@ -4,7 +4,7 @@
 // samples. With every expression lane at 0 and Human / Vary at 0 the two must be bit-identical.
 // A last check turns one ghost note on to show the test does notice a change.
 // Build (from the project folder, one line):
-//   g++ -O2 -std=c++17 tests/engine_identity.cpp Source/engine/{Engine,Groove,Kits,Randomizer}.cpp Source/dsp/{LxrVoice,PatchParams,LxrTables,FxBus}.cpp Source/fx/*.cpp -o engine_identity
+//   g++ -O2 -std=c++17 tests/engine_identity.cpp Source/engine/{Engine,Groove,Kits,Randomizer,Modulation}.cpp Source/dsp/{LxrVoice,PatchParams,LxrTables,FxBus}.cpp Source/fx/*.cpp -o engine_identity
 // SPDX-License-Identifier: GPL-3.0-only
 #include "../Source/engine/Engine.h"
 #include "../Source/engine/Kits.h"

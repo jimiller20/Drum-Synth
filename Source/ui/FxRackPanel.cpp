@@ -8,7 +8,7 @@ using namespace juce;
 using namespace ferrum;
 namespace fxr = ferrum::fx;
 
-static constexpr int kSlotW = 176, kSlotGap = 24, kSlotH = 84, kLaneH = 90, kLaneGap = 8, kGridTop = 106;
+static constexpr int kSlotW = 176, kSlotGap = 24, kSlotH = 70, kLaneH = 76, kLaneGap = 6, kGridTop = 184, kMapH = 128;
 static constexpr int kInX = 166, kSlotX0 = 182;
 
 // lane level: knob 0..1 <-> -inf .. +6 dB
@@ -30,7 +30,7 @@ Colour FxRackPanel::categoryColour (const char* c)
 
 FxRackPanel::FxRackPanel (Ferrum8Processor& p) : proc (p), rack (p.getRack())
 {
-    for (auto* c : std::initializer_list<Component*> { &dryKnob, &outKnob, &outputSel, &chainsBtn, &diceBtn, &bypassBtn, &leftBtn, &rightBtn,
+    for (auto* c : std::initializer_list<Component*> { &dryKnob, &outKnob, &modeSel, &chainsBtn, &diceBtn, &bypassBtn, &leftBtn, &rightBtn,
                                                        &resetBtn, &removeBtn, &swapBtn })
         addAndMakeVisible (c);
     for (auto& k : laneKnobs) addAndMakeVisible (k);
@@ -38,11 +38,14 @@ FxRackPanel::FxRackPanel (Ferrum8Processor& p) : proc (p), rack (p.getRack())
     for (auto& c : pChoices) addChildComponent (c);
 
     auto undo = [this] { proc.pushUndo(); };
-    dryKnob.setLabel ("Dry");
+    dryKnob.setLabel ("Dry Thru");
     dryKnob.setAccent (col::text);
     dryKnob.onGestureStart = undo;
-    dryKnob.setTooltip ("Dry: how much of the unprocessed bus input is added to the lanes (0% = the bus is a pure insert)");
-    dryKnob.bindFree ({ "Dry", 0.f, [this] { return rack.dry (bus); }, [this] (float v) { rack.setDry (bus, v); edited (false); },
+    dryKnob.setTooltip ("Dry Thru: how much of the bus input goes straight to the bus output, past the lanes.\n"
+                        "0% = insert: the sound only comes out through the effects.\n"
+                        "100% = parallel: the untouched sound stays at full level and the lanes are added on top.");
+    dryKnob.bindFree ({ "Dry Thru", 0.f, [this] { return rack.dry (bus); },
+                        [this] (float v) { rack.setDry (bus, v); modeSel.setIndex (v < 0.5f ? 0 : 1); edited (false); repaint (flowBand); repaint (grid); },
                         [] (float v) { return String (roundToInt (v * 100.f)) + "%"; },
                         [] (const String& t, float& n) { n = jlimit (0.f, 1.f, t.getFloatValue() / 100.f); return true; } });
     outKnob.setLabel ("Output");
@@ -54,11 +57,12 @@ FxRackPanel::FxRackPanel (Ferrum8Processor& p) : proc (p), rack (p.getRack())
                         [this] (float v) { rack.setOutDb (bus, -24.f + 36.f * v); edited (false); },
                         [] (float v) { return String (-24.f + 36.f * v, 1) + " dB"; },
                         [] (const String& t, float& n) { n = jlimit (0.f, 1.f, (t.getFloatValue() + 24.f) / 36.f); return true; } });
-    outputSel.setLabel ("TO OUTPUT");
-    outputSel.bindFree ({ "A", "B" }, 0);
-    outputSel.onGestureStart = undo;
-    outputSel.onUserChoice = [this] (int i) { rack.setOutput (bus, i); edited (true); };
-    outputSel.setTooltip ("Where the bus goes: plugin output A (main) or B (second stereo output)");
+    modeSel.setLabel ("DRY SIGNAL");
+    modeSel.bindFree ({ "INSERT", "PARALLEL" }, 0);
+    modeSel.onGestureStart = undo;
+    modeSel.onUserChoice = [this] (int i) { rack.setDry (bus, i == 0 ? 0.f : 1.f); dryKnob.refresh(); edited (false); repaint(); };
+    modeSel.setTooltip ("Insert: everything goes through the lanes (Dry Thru 0%).\nParallel: the dry sound passes at full level and the "
+                        "lanes are added on top (Dry Thru 100%). Use the Dry Thru knob for anything in between.");
     for (int l = 0; l < fxr::kLanes; ++l)
     {
         auto& k = laneKnobs[(size_t) l];
@@ -128,12 +132,15 @@ FxRackPanel::FxRackPanel (Ferrum8Processor& p) : proc (p), rack (p.getRack())
 }
 
 //==============================================================================================
-Rectangle<int> FxRackPanel::busTab (int b) const { return { 12 + b * 176, 10, 170, 66 }; }
-Rectangle<int> FxRackPanel::sendChip (int ch) const { return { 560 + ch * 34, 42, 30, 28 }; }
+// routing map: one row per bus - channel chips (what is sent there) > bus node > destination
+static int mapRowY (int b) { return 8 + b * 40; }
+Rectangle<int> FxRackPanel::busTab (int b) const { return { 330, mapRowY (b), 210, 34 }; }
+Rectangle<int> FxRackPanel::sendChip (int b, int ch) const { return { 74 + ch * 30, mapRowY (b) + 5, 26, 24 }; }
+Rectangle<int> FxRackPanel::destArea (int b) const { return { 580, mapRowY (b), 150, 34 }; }
 Rectangle<int> FxRackPanel::laneArea (int l) const { return { 12, kGridTop + l * (kLaneH + kLaneGap), getWidth() - 24, kLaneH }; }
 Rectangle<int> FxRackPanel::slotArea (int l, int s) const { return { kSlotX0 + s * (kSlotW + kSlotGap), laneArea (l).getY() + 4, kSlotW, kSlotH }; }
 Rectangle<int> FxRackPanel::powerArea (int l, int s) const { auto r = slotArea (l, s); return { r.getRight() - 28, r.getY() + 6, 22, 22 }; }
-Rectangle<int> FxRackPanel::muteArea (int l) const { auto r = laneArea (l); return { r.getX() + 8, r.getY() + 34, 34, 26 }; }
+Rectangle<int> FxRackPanel::muteArea (int l) const { auto r = laneArea (l); return { r.getX() + 8, r.getY() + 32, 34, 26 }; }
 Point<float> FxRackPanel::sumNode() const
 {
     const float top = (float) laneArea (0).getCentreY(), bottom = (float) laneArea (fxr::kLanes - 1).getCentreY();
@@ -142,9 +149,15 @@ Point<float> FxRackPanel::sumNode() const
 
 FxRackPanel::Hit FxRackPanel::findHit (Point<int> p) const
 {
-    for (int b = 0; b < fxr::kBuses; ++b) if (busTab (b).contains (p)) return { Hit::BusTab, b };
-    if (bus != fxr::kMasterBus)
-        for (int ch = 0; ch < Ferrum8Processor::NC; ++ch) if (sendChip (ch).contains (p)) return { Hit::Send, ch };
+    for (int b = 0; b < fxr::kBuses; ++b)
+    {
+        if (busTab (b).contains (p)) return { Hit::BusTab, b };
+        if (b != fxr::kMasterBus)
+        {
+            if (destArea (b).contains (p)) return { Hit::Dest, b };
+            for (int ch = 0; ch < Ferrum8Processor::NC; ++ch) if (sendChip (b, ch).contains (p)) return { Hit::Send, b, ch };
+        }
+    }
     for (int l = 0; l < fxr::kLanes; ++l)
     {
         if (muteArea (l).contains (p)) return { Hit::LaneMute, l };
@@ -190,8 +203,7 @@ void FxRackPanel::syncHeader()
     dryKnob.refresh();
     outKnob.refresh();
     for (auto& k : laneKnobs) k.refresh();
-    outputSel.setIndex (rack.output (bus));
-    outputSel.setVisible (bus != fxr::kMasterBus);
+    modeSel.setIndex (rack.dry (bus) < 0.5f ? 0 : 1);
 }
 
 void FxRackPanel::syncEditor()
@@ -233,6 +245,36 @@ void FxRackPanel::syncEditor()
             k.setBipolar (ps.bipolar);
             k.setAccent (cc);
             k.setVisible (true);
+            mod::Route target; target.kind = mod::Route::Fx; target.bus = b; target.lane = l; target.slot = s; target.idx = i;
+            k.setModRange (proc.modDepthOn (target));
+            k.extendMenu = [this, target] (PopupMenu& m)
+            {
+                PopupMenu sub;
+                const auto& ms = proc.getMods();
+                for (int j = 0; j < mod::kMods; ++j)
+                    sub.addItem (1000 + j, "MOD " + String (j + 1) + "  (" + (ms[(size_t) j].type == mod::Type::Off ? String ("off - becomes an LFO") : String (mod::kTypeNames[(int) ms[(size_t) j].type])) + ")");
+                m.addSeparator();
+                m.addSubMenu ("Modulate with", sub);
+                if (proc.modDepthOn (target) != 0.f) m.addItem (1100, "Remove modulation");
+            };
+            k.onExtendedMenu = [this, target, name = String (ps.name)] (int id)
+            {
+                proc.pushUndo();
+                if (id == 1100)
+                {
+                    auto ms = proc.getMods();
+                    for (auto& st : ms) for (auto& rt : st.routes) if (rt.kind != mod::Route::None && rt.sameTarget (target)) rt = {};
+                    proc.setMods (ms);
+                }
+                else
+                {
+                    auto r = target;
+                    r.depth = 0.3f;
+                    if (proc.addModRoute (id - 1000, r) < 0) { if (showStatus) showStatus ("MOD " + String (id - 999) + " already has 8 targets"); return; }
+                    if (showStatus) showStatus ("MOD " + String (id - 999) + " now moves " + name + " (30%). Set its shape and depth on the MOD tab.");
+                }
+                proc.sendUiChange();
+            };
         }
     }
     layoutEditor();
@@ -249,6 +291,14 @@ void FxRackPanel::setModule (int lane, int slot, fxr::Type t)
 {
     proc.pushUndo();
     rack.setModule (bus, lane, slot, t);
+    { // modulation routes to the old module's parameters no longer make sense
+        auto ms = proc.getMods();
+        bool changed = false;
+        for (auto& st : ms)
+            for (auto& r : st.routes)
+                if (r.kind == mod::Route::Fx && r.bus == bus && r.lane == lane && r.slot == slot) { r = {}; changed = true; }
+        if (changed) proc.setMods (ms);
+    }
     if (t != fxr::Type::None) select (lane, slot);
     else if (lane == selLane && slot == selSlot) selSlot = -1;
     if (showStatus)
@@ -456,19 +506,80 @@ void FxRackPanel::showChainMenu()
     });
 }
 
-void FxRackPanel::toggleSend (int ch)
+void FxRackPanel::toggleSend (int toBus, int ch)
 {
-    if (bus == fxr::kMasterBus) return;
+    if (toBus == fxr::kMasterBus) return;
     const int n = paramDef (P_OUTPUT).numChoices;
     const int cur = choiceIndex (proc.getPatchValue (ch, P_OUTPUT), n);
-    const int target = bus + 2;
+    const int target = toBus + 2;
     const int next = cur == target ? 0 : target;
     proc.pushUndo();
     proc.setPatchValue (ch, P_OUTPUT, choiceValue (next, n));
     proc.sendUiChange();
     if (showStatus)
-        showStatus ("Channel " + String (ch + 1) + (next == target ? String (" now plays through ") + fxr::busName (bus) : String (" back on output A")));
+        showStatus ("Channel " + String (ch + 1) + (next == target ? String (" now plays through ") + fxr::busName (toBus) : String (" back on output A")));
     repaint();
+}
+
+String FxRackPanel::destName (int b) const
+{
+    if (b == fxr::kMasterBus) return "PLUGIN OUT A";
+    switch (rack.output (b))
+    {
+        case fxr::kToB: return "OUT B";
+        case fxr::kToOwn: return String (fxr::busName (b)).toUpperCase() + " OUT";
+        case fxr::kToFx2: return b == 0 ? "INTO FX 2" : "OUT A";
+        default: return "OUT A  > MASTER";
+    }
+}
+
+void FxRackPanel::showDestMenu (int b)
+{
+    if (b == fxr::kMasterBus) return;
+    PopupMenu m;
+    m.addSectionHeader (String (fxr::busName (b)) + " goes to...");
+    const int cur = rack.output (b);
+    m.addItem (1 + fxr::kToA, "Output A (through the Master bus)", true, cur == fxr::kToA);
+    m.addItem (1 + fxr::kToB, "Output B", true, cur == fxr::kToB);
+    m.addItem (1 + fxr::kToOwn, String ("Its own output (\"") + fxr::busName (b) + "\" - route it to a mixer track)", true, cur == fxr::kToOwn);
+    if (b == 0) m.addItem (1 + fxr::kToFx2, "Into FX 2 (FX 1 and FX 2 in series)", true, cur == fxr::kToFx2);
+    SafePointer<FxRackPanel> safe (this);
+    m.showMenuAsync (PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (destArea (b))), [safe, b] (int r)
+    {
+        if (safe == nullptr || r <= 0) return;
+        safe->proc.pushUndo();
+        safe->rack.setOutput (b, r - 1);
+        safe->edited (true);
+        if (safe->showStatus) safe->showStatus (String (fxr::busName (b)) + " now goes " + (r - 1 == fxr::kToFx2 ? "into FX 2 (series)" : "to " + safe->destName (b)));
+        safe->repaint();
+    });
+}
+
+String FxRackPanel::flowText() const
+{
+    const float dry = rack.dry (bus);
+    String t (fxr::busName (bus));
+    t << ":  ";
+    if (bus == fxr::kMasterBus) t << "everything on output A (channels set to A, and FX buses sent to A)";
+    else
+    {
+        t << routedChannels (bus);
+        if (bus == 1 && rack.output (0) == fxr::kToFx2) t << " + all of FX 1";
+    }
+    t << "  >  ";
+    if (dry <= 0.001f) t << "INSERT: no dry signal, the sound only comes out through the lanes";
+    else if (dry >= 0.999f) t << "PARALLEL: the dry sound passes at full level, the lanes are added on top";
+    else t << "dry sound passes at " << roundToInt (dry * 100.f) << "%, the lanes are added on top";
+    t << "  >  ";
+    if (bus == fxr::kMasterBus) t << "plugin output A";
+    else switch (rack.output (bus))
+    {
+        case fxr::kToB: t << "output B"; break;
+        case fxr::kToOwn: t << "its own plugin output (" << fxr::busName (bus) << ")"; break;
+        case fxr::kToFx2: t << (bus == 0 ? "into FX 2 (series)" : "output A, then Master"); break;
+        default: t << "output A, then Master"; break;
+    }
+    return t;
 }
 
 String FxRackPanel::routedChannels (int b) const
@@ -513,21 +624,22 @@ void FxRackPanel::tick()
 
 void FxRackPanel::resized()
 {
-    header = { 0, 0, getWidth(), 84 };
-    grid = { 0, 84, getWidth(), kGridTop - 84 + fxr::kLanes * (kLaneH + kLaneGap) };
+    header = { 0, 0, getWidth(), kMapH };
+    flowBand = { 0, kMapH, getWidth(), 26 };
+    grid = { 0, flowBand.getBottom(), getWidth(), kGridTop - flowBand.getBottom() + fxr::kLanes * (kLaneH + kLaneGap) };
     editor = { 12, grid.getBottom() + 4, getWidth() - 24, getHeight() - grid.getBottom() - 12 };
     editorInfo = editor.withWidth (380);
 
     const int right = getWidth() - 12;
-    outputSel.setBounds (right - 76, 14, 76, 54);
-    outKnob.setBounds (right - 76 - 70, 8, 64, 70);
-    dryKnob.setBounds (right - 76 - 140, 8, 64, 70);
-    chainsBtn.setBounds (dryKnob.getX() - 146, 12, 132, 28);
-    diceBtn.setBounds (dryKnob.getX() - 146, 46, 132, 28);
+    outKnob.setBounds (right - 66, 26, 64, 74);
+    dryKnob.setBounds (right - 136, 26, 64, 74);
+    modeSel.setBounds (right - 136 - 160, 40, 150, 52);
+    chainsBtn.setBounds (760, 26, 132, 28);
+    diceBtn.setBounds (760, 64, 132, 28);
     for (int l = 0; l < fxr::kLanes; ++l)
     {
         auto la = laneArea (l);
-        laneKnobs[(size_t) l].setBounds (la.getX() + 74, la.getY() + 10, 60, 74);
+        laneKnobs[(size_t) l].setBounds (la.getX() + 74, la.getY() + 4, 60, 72);
     }
     auto row = editorInfo.reduced (12, 10);
     row = row.removeFromBottom (30);
@@ -549,8 +661,8 @@ void FxRackPanel::layoutEditor()
     for (int i = 0; i < n; ++i)
     {
         const int x = x0 + i * cw;
-        pKnobs[(size_t) i].setBounds (x + (cw - 84) / 2, editor.getY() + 26, 84, 94);
-        pChoices[(size_t) i].setBounds (x + (cw - 88) / 2, editor.getY() + 40, 88, 62);
+        pKnobs[(size_t) i].setBounds (x + (cw - 84) / 2, editor.getY() + 16, 84, 92);
+        pChoices[(size_t) i].setBounds (x + (cw - 88) / 2, editor.getY() + 30, 88, 62);
     }
 }
 
@@ -558,67 +670,109 @@ void FxRackPanel::layoutEditor()
 void FxRackPanel::paint (Graphics& g)
 {
     g.fillAll (col::panel);
-    // ---- header
+    // ---- routing map: what goes into each bus, the bus, and where it goes
     g.setColour (col::panel2);
     g.fillRect (header);
     g.setColour (col::line);
     g.drawHorizontalLine (header.getBottom(), 0.f, (float) getWidth());
+    const int nOut = paramDef (P_OUTPUT).numChoices;
+    auto arrow = [&g] (float x0, float y0, float x1, float y1, Colour c)
+    {
+        g.setColour (c);
+        g.drawLine (x0, y0, x1 - 6.f, y1, 1.5f);
+        Path a;
+        const float ang = std::atan2 (y1 - y0, x1 - x0);
+        a.addTriangle (x1, y1, x1 - 8.f * std::cos (ang - 0.45f), y1 - 8.f * std::sin (ang - 0.45f),
+                       x1 - 8.f * std::cos (ang + 0.45f), y1 - 8.f * std::sin (ang + 0.45f));
+        g.fillPath (a);
+    };
     for (int b = 0; b < fxr::kBuses; ++b)
     {
-        auto r = busTab (b).toFloat();
+        const auto node = busTab (b).toFloat();
+        const float cy = node.getCentreY();
         const bool sel = b == bus;
-        g.setColour (sel ? col::raised.brighter (0.06f) : col::panel);
-        g.fillRoundedRectangle (r, 6.f);
-        g.setColour (sel ? col::accent : (hover.kind == Hit::BusTab && hover.a == b ? col::dim : col::line));
-        g.drawRoundedRectangle (r.reduced (0.5f), 6.f, sel ? 2.f : 1.f);
-        auto t = r.reduced (12.f, 7.f);
+        // sources
+        g.setFont (font (13.f, true));
+        g.setColour (col::dim);
+        if (b != fxr::kMasterBus)
+        {
+            g.drawText ("SENDS", Rectangle<int> (12, mapRowY (b), 58, 34), Justification::centredLeft);
+            bool any = false;
+            for (int ch = 0; ch < Ferrum8Processor::NC; ++ch)
+            {
+                auto r = sendChip (b, ch).toFloat();
+                const bool on = choiceIndex (proc.getPatchValue (ch, P_OUTPUT), nOut) == b + 2;
+                any |= on;
+                const auto cc = col::channel (ch);
+                g.setColour (on ? cc : col::raised);
+                g.fillRoundedRectangle (r, 4.f);
+                g.setColour (hover.kind == Hit::Send && hover.a == b && hover.b == ch ? col::text : (on ? cc.brighter (0.3f) : col::line.brighter (0.2f)));
+                g.drawRoundedRectangle (r.reduced (0.5f), 4.f, 1.f);
+                g.setColour (on ? Colours::black : col::faint);
+                g.setFont (font (13.5f, true));
+                g.drawText (String (ch + 1), r, Justification::centred);
+            }
+            arrow (318.f, cy, node.getX() - 2.f, cy, any ? col::dim : col::faint);
+            if (b == 1 && rack.output (0) == fxr::kToFx2) // FX 1 feeds FX 2: say so where FX 2's inputs are
+            {
+                g.setColour (col::panel2);
+                g.fillRect (Rectangle<int> (12, mapRowY (b), 58, 34));
+                g.setColour (col::dim);
+                g.setFont (font (12.5f, true));
+                g.drawText ("SENDS", Rectangle<int> (12, mapRowY (b) + 2, 58, 15), Justification::centredLeft);
+                g.setColour (col::accent);
+                g.drawText ("+ FX 1", Rectangle<int> (12, mapRowY (b) + 17, 58, 15), Justification::centredLeft);
+            }
+        }
+        else
+        {
+            g.drawFittedText ("Output A: channels on A + buses sent to A", Rectangle<int> (12, mapRowY (b), 300, 34), Justification::centredLeft, 1, 0.8f);
+            arrow (318.f, cy, node.getX() - 2.f, cy, col::dim);
+        }
+        // bus node
+        const bool hov = hover.kind == Hit::BusTab && hover.a == b;
+        g.setColour (sel ? col::raised.brighter (0.08f) : col::raised);
+        g.fillRoundedRectangle (node, 6.f);
+        g.setColour (sel ? col::accent : (hov ? col::dim : col::line.brighter (0.15f)));
+        g.drawRoundedRectangle (node.reduced (0.5f), 6.f, sel ? 2.f : 1.f);
+        auto t = node.reduced (10.f, 3.f);
         g.setColour (sel ? col::accent : col::text);
-        g.setFont (font (21.f, true));
-        g.drawText (String (fxr::busName (b)).toUpperCase(), t.removeFromTop (24.f), Justification::centredLeft);
-        g.setFont (font (13.5f));
+        g.setFont (font (17.f, true));
+        g.drawText (String (fxr::busName (b)).toUpperCase(), t.removeFromLeft (74.f), Justification::centredLeft);
+        g.setFont (font (13.f));
         g.setColour (col::dim);
         const int nm = rack.moduleCount (b);
-        String sub = nm == 0 ? String ("empty") : String (nm) + (nm == 1 ? " module" : " modules");
-        if (b != fxr::kMasterBus) sub << "  |  " << routedChannels (b) << "  >  " << (rack.output (b) == 1 ? "B" : "A");
-        g.drawFittedText (sub, t.removeFromTop (18.f).toNearestInt(), Justification::centredLeft, 1, 0.75f);
-        auto meter = Rectangle<float> (r.getX() + 12.f, r.getBottom() - 11.f, r.getWidth() - 24.f, 4.f);
+        g.drawText (nm == 0 ? String ("empty") : String (nm) + (nm == 1 ? " module" : " modules"), t.withTrimmedBottom (6.f), Justification::centredRight);
+        auto meter = Rectangle<float> (node.getX() + 10.f, node.getBottom() - 7.f, node.getWidth() - 20.f, 3.f);
         g.setColour (col::bg);
-        g.fillRoundedRectangle (meter, 2.f);
+        g.fillRoundedRectangle (meter, 1.5f);
         const float lvl = jlimit (0.f, 1.f, (Decibels::gainToDecibels (meters[(size_t) b], -60.f) + 60.f) / 66.f);
         g.setColour (meters[(size_t) b] > 0.98f ? col::mute : col::play);
-        g.fillRoundedRectangle (meter.withWidth (meter.getWidth() * lvl), 2.f);
-    }
-    if (bus != fxr::kMasterBus)
-    {
-        g.setColour (col::dim);
+        g.fillRoundedRectangle (meter.withWidth (meter.getWidth() * lvl), 1.5f);
+        // destination
+        const auto d = destArea (b).toFloat();
+        arrow (node.getRight() + 2.f, cy, d.getX() - 2.f, cy, col::dim);
+        const bool dhov = hover.kind == Hit::Dest && hover.a == b;
+        g.setColour (b == fxr::kMasterBus ? col::panel : (dhov ? col::raised.brighter (0.08f) : col::raised));
+        g.fillRoundedRectangle (d, 5.f);
+        g.setColour (dhov ? col::text : col::line.brighter (0.15f));
+        g.drawRoundedRectangle (d.reduced (0.5f), 5.f, 1.f);
+        g.setColour (b != fxr::kMasterBus && rack.output (b) == fxr::kToFx2 ? col::accent : col::text);
         g.setFont (font (13.5f, true));
-        g.drawText ("CHANNELS SENT HERE", sendChip (0).getX(), 16, 300, 18, Justification::centredLeft);
-        const int n = paramDef (P_OUTPUT).numChoices;
-        for (int ch = 0; ch < Ferrum8Processor::NC; ++ch)
-        {
-            auto r = sendChip (ch).toFloat();
-            const bool on = choiceIndex (proc.getPatchValue (ch, P_OUTPUT), n) == bus + 2;
-            const auto cc = col::channel (ch);
-            g.setColour (on ? cc : col::raised);
-            g.fillRoundedRectangle (r, 4.f);
-            g.setColour (hover.kind == Hit::Send && hover.a == ch ? col::text : (on ? cc.brighter (0.3f) : col::line.brighter (0.2f)));
-            g.drawRoundedRectangle (r.reduced (0.5f), 4.f, 1.f);
-            g.setColour (on ? Colours::black : col::dim);
-            g.setFont (font (15.f, true));
-            g.drawText (String (ch + 1), r, Justification::centred);
-        }
+        g.drawFittedText (destName (b) + (b != fxr::kMasterBus ? "  v" : ""), d.reduced (8.f, 0.f).toNearestInt(), Justification::centred, 1, 0.8f);
     }
-    else
-    {
-        g.setColour (col::dim);
-        g.setFont (font (14.f));
-        g.drawFittedText ("The Master bus processes output A: every channel set to A plus the FX buses sent to A. "
-                          "Output B stays untouched.", Rectangle<int> (560, 14, 270, 60), Justification::centredLeft, 3);
-    }
+    // the selected bus, in words
+    g.setColour (col::bg);
+    g.fillRect (flowBand);
+    g.setColour (col::text.withAlpha (0.85f));
+    g.setFont (font (14.f));
+    g.drawFittedText (flowText(), flowBand.reduced (14, 0), Justification::centredLeft, 1, 0.75f);
+    g.setColour (col::line);
+    g.drawHorizontalLine (flowBand.getBottom(), 0.f, (float) getWidth());
 
     // ---- signal flow
     const auto sum = sumNode();
-    const float dryY = (float) kGridTop - 8.f;
+    const float dryY = (float) kGridTop - 7.f;
     const float laneTop = (float) laneArea (0).getCentreY(), laneBottom = (float) laneArea (fxr::kLanes - 1).getCentreY();
     {
         const bool dryOn = rack.dry (bus) > 0.001f;
@@ -635,12 +789,18 @@ void FxRackPanel::paint (Graphics& g)
             PathStrokeType (1.f).createDashedStroke (dashed, dry, dashes, 2);
             g.fillPath (dashed);
         }
-        const auto dryLabel = Rectangle<float> (580.f, dryY - 7.f, 80.f, 14.f);
+        const auto dryLabel = Rectangle<float> (470.f, dryY - 7.f, 300.f, 14.f);
         g.setColour (col::panel);
         g.fillRect (dryLabel);
         g.setColour (dryOn ? col::dim : col::faint);
         g.setFont (font (13.f, true));
-        g.drawText ("DRY " + String (roundToInt (rack.dry (bus) * 100.f)) + "%", dryLabel, Justification::centred);
+        g.drawText (dryOn ? "DRY THRU " + String (roundToInt (rack.dry (bus) * 100.f)) + "%  (skips the lanes)" : String ("NO DRY SIGNAL  (insert)"),
+                    dryLabel, Justification::centred);
+        g.setColour (col::faint);
+        g.setFont (font (12.5f, true));
+        const float capY = (float) flowBand.getBottom() + 3.f;
+        g.drawText ("LANES: SIDE BY SIDE (PARALLEL)", Rectangle<float> (12.f, capY, 160.f, 13.f), Justification::centredLeft);
+        g.drawText ("SLOTS IN A LANE: LEFT TO RIGHT (SERIES)  >", Rectangle<float> ((float) kSlotX0, capY, 300.f, 13.f), Justification::centredLeft);
         // input bus
         g.setColour (col::dim);
         g.drawLine ((float) kInX, dryY, (float) kInX, laneBottom, 2.f);
@@ -659,7 +819,7 @@ void FxRackPanel::paint (Graphics& g)
         g.fillRoundedRectangle (Rectangle<float> ((float) la.getX(), (float) la.getY(), 140.f, (float) la.getHeight()), 5.f);
         g.setColour (any ? col::text : col::faint);
         g.setFont (font (14.5f, true));
-        g.drawText ("LANE " + String (l + 1), la.getX() + 10, la.getY() + 8, 70, 18, Justification::centredLeft);
+        g.drawText ("LANE " + String (l + 1), la.getX() + 10, la.getY() + 7, 70, 18, Justification::centredLeft);
         auto mb = muteArea (l).toFloat();
         g.setColour (muted ? col::mute : col::raised);
         g.fillRoundedRectangle (mb, 4.f);
@@ -732,12 +892,12 @@ void FxRackPanel::paint (Graphics& g)
             g.setColour (col::dim.withAlpha (alpha));
             tr.removeFromTop (3.f);
             for (int line = 0; line < 2; ++line)
-                g.drawFittedText (slotSummary (l, s, line), tr.removeFromTop (17.f).toNearestInt(), Justification::centredLeft, 1, 0.8f);
+                g.drawFittedText (slotSummary (l, s, line), tr.removeFromTop (15.f).toNearestInt(), Justification::centredLeft, 1, 0.8f);
             const int mixIdx = fxr::paramIndex (t, "Mix");
             if (mixIdx >= 0)
             {
                 const float mix = rack.param (bus, l, s, mixIdx);
-                auto bar = Rectangle<float> (r.getX() + 16.f, r.getBottom() - 10.f, r.getWidth() - 30.f, 3.f);
+                auto bar = Rectangle<float> (r.getX() + 16.f, r.getBottom() - 8.f, r.getWidth() - 30.f, 3.f);
                 g.setColour (col::bg);
                 g.fillRoundedRectangle (bar, 1.5f);
                 g.setColour (cc.withAlpha (0.8f * alpha));
@@ -764,8 +924,7 @@ void FxRackPanel::paint (Graphics& g)
     g.drawLine (sum.x, sum.y - 6.f, sum.x, sum.y + 6.f, 2.f);
     g.drawLine (sum.x, sum.y + 14.f, sum.x, laneBottom + 30.f, 1.5f);
     g.setFont (font (12.5f, true));
-    const String dest = bus == fxr::kMasterBus ? String ("OUT A") : String ("OUT ") + (rack.output (bus) == 1 ? "B" : "A");
-    g.drawText (dest, Rectangle<float> (sum.x - 30.f, laneBottom + 32.f, 60.f, 14.f), Justification::centred);
+    g.drawText ("OUT", Rectangle<float> (sum.x - 30.f, laneBottom + 30.f, 60.f, 14.f), Justification::centred);
     ignoreUnused (laneTop);
 
     // ---- module editor
@@ -778,11 +937,12 @@ void FxRackPanel::paint (Graphics& g)
     {
         g.setColour (col::dim);
         g.setFont (font (15.5f));
-        g.drawFittedText ("Click a slot to add an effect. Slots in a lane run in series, left to right; the three lanes run in parallel "
-                          "and are mixed with the dry signal. Drag a card to move it (Alt-drag copies), right-click for more.\n"
-                          "Send a channel here with the numbers above, or with its Output setting (A, B, FX 1, FX 2). "
-                          "Chains has ready-made setups; Roll Chain makes a random one.",
-                          editor.reduced (24, 16), Justification::centredLeft, 5);
+        g.drawFittedText ("HOW A BUS WORKS:  the channels you send (the numbers above) are mixed into the bus input. Every lane gets that "
+                          "same input and runs its slots left to right; the three lanes are then added together with the Dry Thru signal "
+                          "(0% = insert, 100% = parallel) and leave through the bus Output to its destination. FX 1 and FX 2 are separate "
+                          "unless you send FX 1 into FX 2. Master processes everything on output A.\n"
+                          "Click a slot to add an effect, drag cards to move them (Alt-drag copies), right-click for more.",
+                          editor.reduced (24, 12), Justification::centredLeft, 6);
         return;
     }
     const auto& in = fxr::info (t);
@@ -851,7 +1011,8 @@ void FxRackPanel::mouseDown (const MouseEvent& e)
     switch (h.kind)
     {
         case Hit::BusTab: showBus (h.a); break;
-        case Hit::Send: toggleSend (h.a); break;
+        case Hit::Send: toggleSend (h.a, h.b); break;
+        case Hit::Dest: showDestMenu (h.a); break;
         case Hit::LaneMute:
             proc.pushUndo();
             rack.setLaneMute (bus, h.a, ! rack.laneMuted (bus, h.a));
@@ -907,10 +1068,13 @@ String FxRackPanel::getTooltip()
     switch (hover.kind)
     {
         case Hit::BusTab:
-            return hover.a == fxr::kMasterBus ? String ("Master: processes everything on output A")
-                                              : String (fxr::busName (hover.a)) + ": " + routedChannels (hover.a);
+            return hover.a == fxr::kMasterBus ? String ("Master: processes everything on output A (click to edit)")
+                                              : String (fxr::busName (hover.a)) + ": " + routedChannels (hover.a) + " (click to edit)";
         case Hit::Send:
-            return "Send channel " + String (hover.a + 1) + " through " + fxr::busName (bus) + " (click again: back to output A)";
+            return "Send channel " + String (hover.b + 1) + " through " + fxr::busName (hover.a) + " (click again: back to output A)";
+        case Hit::Dest:
+            return "Where " + String (fxr::busName (hover.a)) + " goes: output A, output B, its own output (for a mixer track)"
+                   + (hover.a == 0 ? String (", or into FX 2 (series)") : String());
         case Hit::LaneMute: return "Mute lane " + String (hover.a + 1);
         case Hit::Power: return "Bypass on / off";
         case Hit::Slot:

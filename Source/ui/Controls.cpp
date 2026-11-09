@@ -79,6 +79,17 @@ void Knob::paint (Graphics& g)
         g.strokePath (val, PathStrokeType (3.2f, PathStrokeType::curved, PathStrokeType::rounded));
     }
 
+    if (modRange != 0.f) // the range a modulator sweeps, outside the value arc
+    {
+        const float a0 = ang, a1 = kArcStart + jlimit (0.f, 1.f, norm + modRange) * (kArcEnd - kArcStart);
+        const float rr = r + 3.5f;
+        Path mr;
+        mr.addCentredArc (c.x, c.y, rr, rr, 0.f, jmin (a0, a1), jmax (a0, a1) + 0.001f, true);
+        g.setColour (col::mod);
+        g.strokePath (mr, PathStrokeType (2.f, PathStrokeType::curved, PathStrokeType::rounded));
+        g.fillEllipse (c.x + std::sin (a1) * rr - 2.f, c.y - std::cos (a1) * rr - 2.f, 4.f, 4.f);
+    }
+
     const float br = r - 5.5f;
     g.setGradientFill (ColourGradient (col::raised.brighter (0.12f), c.x, c.y - br, col::panel, c.x, c.y + br, false));
     g.fillEllipse (c.x - br, c.y - br, br * 2, br * 2);
@@ -130,10 +141,12 @@ void Knob::mouseDown (const MouseEvent& e)
         m.addSectionHeader (name + ":  " + valueText());
         m.addItem (1, "Reset to default");
         m.addItem (2, "Enter value...");
+        if (extendMenu) extendMenu (m);
         SafePointer<Knob> safe (this);
         m.showMenuAsync (PopupMenu::Options().withTargetComponent (this), [safe, name] (int r)
         {
             if (safe == nullptr) return;
+            if (r >= 1000) { if (safe->onExtendedMenu) safe->onExtendedMenu (r); return; }
             if (r == 1) safe->resetToDefault();
             if (r == 2)
             {

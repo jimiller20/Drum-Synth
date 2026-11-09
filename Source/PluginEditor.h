@@ -10,6 +10,7 @@
 #include "ui/TopPanels.h"
 #include "ui/DicePanel.h"
 #include "ui/FxRackPanel.h"
+#include "ui/ModPanel.h"
 
 class Ferrum8Editor : public juce::AudioProcessorEditor,
                       public juce::DragAndDropContainer,
@@ -34,9 +35,10 @@ private:
     void drawStatus (juce::Graphics& g);
     void drawTabs (juce::Graphics& g);
 public:
-    void setTab (int t);              // 0 drums (patch + pattern), 1 FX rack
+    void setTab (int t);              // 0 drums (patch + pattern), 1 FX rack, 2 modulation
     int getTab() const { return tab; }
     ui::FxRackPanel& getFxPanel() { return fxPanel; }
+    ui::ModPanel& getModPanel() { return modPanel; }
 private:
 
     void timerCallback() override;
@@ -67,7 +69,9 @@ private:
     ui::PatternPanel pattern;
     ui::GlobalPanel global;
     ui::FxRackPanel fxPanel;
-    ui::IconButton drumsTab { ui::IconButton::Icon::None, "DRUMS" }, fxTab { ui::IconButton::Icon::None, "FX RACK" };
+    ui::ModPanel modPanel;
+    ui::IconButton drumsTab { ui::IconButton::Icon::None, "DRUMS" }, fxTab { ui::IconButton::Icon::None, "FX RACK" },
+                   modTab { ui::IconButton::Icon::None, "MOD" };
     int tab = 0;
     juce::Rectangle<int> tabArea;
     juce::TooltipWindow tooltips { this, 700 };

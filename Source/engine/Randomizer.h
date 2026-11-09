@@ -55,6 +55,9 @@ public:
     Patch patch (Flavor f, const Patch& current, Genre g = Genre::Any);
     Patch patchForModel (const Patch& current, Genre g = Genre::Any); // "Randomize Drum Patch": keeps the model
     Patch cymbal (CymbalType t, const Patch& current, Genre g = Genre::Any);
+    // Sound mutation: small moves of the sound-shaping parameters (pitch, decay, tone, filter, noise,
+    // FM depth, transient, drive) around 'base'. depth 0..1. Model, level, pan and routing never change.
+    Patch mutateSound (const Patch& base, float depth);
     CymbalType cymbalTypeFor (Genre g);                    // a type that suits the genre (weighted)
     Genre genreFor (const DiceSettings& s);                // resolves "follow the beat style"
     Patch alter (const Patch& p, float amount = 0.12f);    // "Alter Drum Patch"
@@ -87,6 +90,9 @@ public:
     Patch kitPatch (Flavor f, const Patch& current, const DiceSettings& s); // patch() + character + key
     void applyCharacter (Patch& p, KitCharacter c);
     void applyGenre (Patch& p, Flavor f, Genre g);        // genre ranges on top of a flavor recipe
+public:
+    static float hitLoudness (const Patch& p);            // K-weighted loudness of one full-velocity hit (LUFS)
+    void fitCymbalLevel (Patch& p);                       // level so the hit sits ~10 dB under a snare
     static void tuneToKey (Patch& p, int key);
 
     float uni (float a, float b) { return std::uniform_real_distribution<float> (a, b) (rng); }

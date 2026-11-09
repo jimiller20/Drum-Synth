@@ -27,6 +27,8 @@ void Engine::prepare (double sampleRate, int maxBlock)
     sr = sampleRate;
     for (int c = 0; c < kNumChannels; ++c) voices[(size_t) c].prepare (sr, (uint32_t) (c + 1) * 7919u);
     rack.prepare (sr, std::max (maxBlock, 64));
+    mods.prepare (sr);
+    modVals.assign ((size_t) (std::max (maxBlock, 64) / mod::kBlock + 2), {});
     const size_t n = (size_t) std::max (maxBlock, 16);
     mono.assign (n, 0.f);
     for (int k = 0; k < 2; ++k) { busL[k].assign (n, 0.f); busR[k].assign (n, 0.f); }
@@ -37,6 +39,7 @@ void Engine::reset()
 {
     for (auto& v : voices) v.reset();
     rack.reset();
+    mods.reset();
     pending.clear();
     pendingNoteOffs.clear();
     expectedPpq = -1.0;
@@ -355,6 +358,7 @@ void Engine::handleMidi (const MidiIn& m, double ppqAt, std::vector<Trig>& out)
 
 void Engine::doTrigger (const Trig& tr, int sampleIndex)
 {
+    mods.onHit (tr.ch, tr.vel);
     Voice& v = voices[(size_t) tr.ch];
     const long long when = sampleClock + sampleIndex;
     if (v.chokes())
@@ -372,14 +376,29 @@ void Engine::doTrigger (const Trig& tr, int sampleIndex)
 }
 
 //---------------------------------------------------------------------------------------------
-void Engine::process (float* aL, float* aR, float* bL, float* bR, int n, const Transport& t,
-                      const std::vector<MidiIn>& midiIn, std::vector<MidiOut>* midiOut)
+void Engine::process (const Outputs& out, int n, const Transport& t, const std::vector<MidiIn>& midiIn, std::vector<MidiOut>* midiOut)
 {
+    float* const aL = out.aL;
+    float* const aR = out.aR;
+    float* const bL = (out.bL != nullptr && out.bR != nullptr) ? out.bL : nullptr;
+    float* const bR = bL != nullptr ? out.bR : nullptr;
     if ((int) mono.size() < n) { mono.resize ((size_t) n); for (int k = 0; k < 2; ++k) { busL[k].resize ((size_t) n); busR[k].resize ((size_t) n); } }
     const double bpm = (t.hostHasTransport && t.bpm > 0) ? t.bpm : globals.tempo;
     rack.setTempo (bpm);
     for (auto& v : voices) v.setBpm (bpm);
     for (int c = 0; c < kNumChannels; ++c) uiMidiMute[c].store (midiMute[c]);
+
+    mods.beginBlock();
+    const bool modOn = mods.active();
+    if ((int) modVals.size() < n / mod::kBlock + 2) modVals.resize ((size_t) (n / mod::kBlock + 2));
+    if (! modOn && modWasOn) // routes removed: give every parameter its own value back
+    {
+        for (int c = 0; c < kNumChannels; ++c)
+            for (int p = 0; p < NUM_PATCH_PARAMS; ++p)
+                if (modApplied[(size_t) c][(size_t) p] != 0.f) { voices[(size_t) c].setModOffset (p, 0.f); modApplied[(size_t) c][(size_t) p] = 0.f; }
+        rack.clearModulation();
+    }
+    modWasOn = modOn;
 
     trigs.clear();
     // UI previews (bypass mutes, like clicking a channel button)
@@ -406,8 +425,25 @@ void Engine::process (float* aL, float* aR, float* bL, float* bR, int n, const T
 
     for (int i = 0; i < n; ++i) { aL[i] = aR[i] = 0.f; for (int k = 0; k < 2; ++k) busL[k][(size_t) i] = busR[k][(size_t) i] = 0.f; }
     if (bL != nullptr) for (int i = 0; i < n; ++i) { bL[i] = bR[i] = 0.f; }
+    // own outputs: a pair the host has not activated falls back to A
+    std::array<float*, kNumChannels> ownL {}, ownR {};
+    for (int c = 0; c < kNumChannels; ++c)
+    {
+        const bool ok = out.chL[(size_t) c] != nullptr && out.chR[(size_t) c] != nullptr;
+        ownL[(size_t) c] = ok ? out.chL[(size_t) c] : aL;
+        ownR[(size_t) c] = ok ? out.chR[(size_t) c] : aR;
+        if (ok) for (int i = 0; i < n; ++i) ownL[(size_t) c][i] = ownR[(size_t) c][i] = 0.f;
+    }
+    std::array<float*, 2> fxOutL {}, fxOutR {};
+    for (int k = 0; k < 2; ++k)
+    {
+        const bool ok = out.fxL[(size_t) k] != nullptr && out.fxR[(size_t) k] != nullptr;
+        fxOutL[(size_t) k] = ok ? out.fxL[(size_t) k] : aL;
+        fxOutR[(size_t) k] = ok ? out.fxR[(size_t) k] : aR;
+        if (ok) for (int i = 0; i < n; ++i) fxOutL[(size_t) k][i] = fxOutR[(size_t) k][i] = 0.f;
+    }
 
-    auto renderSegment = [&] (int pos, int len)
+    auto renderVoices = [&] (int pos, int len)
     {
         if (len <= 0) return;
         for (int c = 0; c < kNumChannels; ++c)
@@ -416,11 +452,18 @@ void Engine::process (float* aL, float* aR, float* bL, float* bR, int n, const T
             if (v.isFinished()) continue; // only skip once the tail has fully played (the hardware never cuts it)
             v.render (mono.data(), len);
             const float pl = v.panLeft(), pr = v.panRight();
+            if (modOn) { float pk = chLevel[(size_t) c]; for (int i = 0; i < len; ++i) pk = std::max (pk, std::fabs (mono[(size_t) i])); chLevel[(size_t) c] = pk; }
             const int o = v.output();
-            if (o >= 2) // FX 1 / FX 2 bus of the rack
+            if (o == 2 || o == 3) // FX 1 / FX 2 bus of the rack
             {
                 float* L = busL[o - 2].data() + pos;
                 float* R = busR[o - 2].data() + pos;
+                for (int i = 0; i < len; ++i) { L[i] += mono[(size_t) i] * pl; R[i] += mono[(size_t) i] * pr; }
+            }
+            else if (o == 4) // the channel's own output (falls back to A)
+            {
+                float* L = ownL[(size_t) c] + pos;
+                float* R = ownR[(size_t) c] + pos;
                 for (int i = 0; i < len; ++i) { L[i] += mono[(size_t) i] * pl; R[i] += mono[(size_t) i] * pr; }
             }
             else
@@ -429,6 +472,46 @@ void Engine::process (float* aL, float* aR, float* bL, float* bR, int n, const T
                 float* R = (o == 1 && bR != nullptr) ? bR : aR;
                 for (int i = 0; i < len; ++i) { L[pos + i] += mono[(size_t) i] * pl; R[pos + i] += mono[(size_t) i] * pr; }
             }
+        }
+    };
+
+    // modulation: once per 64-sample control block, before the voices render it
+    const bool modPlaying = (t.hostHasTransport && t.hostPlaying) || (usingInternal && (state == SeqState::Playing || state == SeqState::WaitingStop));
+    int nextModPos = 0;
+    auto modulate = [&] (int pos)
+    {
+        const int len = std::min (mod::kBlock, n - pos);
+        mods.advance (len, basePpq + pos * ppqPerSample, bpm, modPlaying, chLevel.data(), mainLevel);
+        chLevel.fill (0.f);
+        auto& vals = modVals[(size_t) (pos / mod::kBlock)];
+        for (int m = 0; m < mod::kMods; ++m) vals[(size_t) m] = mods.value (m);
+        std::array<std::array<float, NUM_PATCH_PARAMS>, kNumChannels> sum {};
+        const auto& st = mods.live();
+        for (int m = 0; m < mod::kMods; ++m)
+        {
+            if (st[(size_t) m].type == mod::Type::Off) continue;
+            for (const auto& r : st[(size_t) m].routes)
+                if (r.kind == mod::Route::Channel && r.ch >= 0 && r.ch < kNumChannels && r.param >= 0 && r.param < NUM_PATCH_PARAMS)
+                    sum[(size_t) r.ch][(size_t) r.param] += r.depth * vals[(size_t) m];
+        }
+        for (int c = 0; c < kNumChannels; ++c)
+            for (int p = 0; p < NUM_PATCH_PARAMS; ++p)
+                if (sum[(size_t) c][(size_t) p] != modApplied[(size_t) c][(size_t) p])
+                {
+                    modApplied[(size_t) c][(size_t) p] = sum[(size_t) c][(size_t) p];
+                    voices[(size_t) c].setModOffset (p, sum[(size_t) c][(size_t) p]);
+                }
+    };
+    auto renderSegment = [&] (int pos, int len)
+    {
+        if (! modOn) { renderVoices (pos, len); return; } // no modulation: exactly as before
+        while (len > 0)
+        {
+            if (pos >= nextModPos) { modulate (pos); nextModPos = (pos / mod::kBlock + 1) * mod::kBlock; }
+            const int chunk = std::min (len, nextModPos - pos);
+            renderVoices (pos, chunk);
+            pos += chunk;
+            len -= chunk;
         }
     };
 
@@ -452,19 +535,58 @@ void Engine::process (float* aL, float* aR, float* bL, float* bR, int n, const T
     }
     renderSegment (pos, n - pos);
 
-    // FX rack: the two FX buses (always run, so reverb and delay tails ring out), then Master on output A
-    for (int k = 0; k < 2; ++k)
+    // FX rack: FX 1 then FX 2 (always run, so reverb and delay tails ring out). FX 1 can feed FX 2
+    // (series); otherwise each bus goes to A, B or its own output. Then Master processes output A.
+    auto runFx = [&] (int pos, int len)
     {
-        rack.process (k, busL[k].data(), busR[k].data(), n);
-        float* L = (rack.output (k) == 1 && bL != nullptr) ? bL : aL;
-        float* R = (rack.output (k) == 1 && bR != nullptr) ? bR : aR;
-        for (int i = 0; i < n; ++i) { L[i] += busL[k][(size_t) i]; R[i] += busR[k][(size_t) i]; }
+        for (int k = 0; k < 2; ++k)
+        {
+            float* inL = busL[k].data() + pos;
+            float* inR = busR[k].data() + pos;
+            rack.process (k, inL, inR, len);
+            float* L = aL;
+            float* R = aR;
+            switch (rack.output (k))
+            {
+                case fx::kToB:   if (bL != nullptr) { L = bL; R = bR; } break;
+                case fx::kToOwn: L = fxOutL[(size_t) k]; R = fxOutR[(size_t) k]; break;
+                case fx::kToFx2: if (k == 0) { L = busL[1].data(); R = busR[1].data(); } break;
+                default: break;
+            }
+            for (int i = 0; i < len; ++i) { L[pos + i] += inL[i]; R[pos + i] += inR[i]; }
+        }
+        rack.process (fx::kMasterBus, aL + pos, aR + pos, len);
+    };
+    if (modOn && mods.fxActive())
+    {
+        const auto& st = mods.live();
+        for (int pos = 0; pos < n; pos += mod::kBlock)
+        {
+            rack.clearModulation();
+            const auto& vals = modVals[(size_t) (pos / mod::kBlock)];
+            for (int m = 0; m < mod::kMods; ++m)
+            {
+                if (st[(size_t) m].type == mod::Type::Off) continue;
+                for (const auto& r : st[(size_t) m].routes)
+                    if (r.kind == mod::Route::Fx) rack.addModulation (r.bus, r.lane, r.slot, r.idx, r.depth * vals[(size_t) m]);
+            }
+            runFx (pos, std::min (mod::kBlock, n - pos));
+        }
     }
-    rack.process (fx::kMasterBus, aL, aR, n);
+    else
+    {
+        rack.clearModulation();
+        runFx (0, n);
+    }
 
     const float g = globals.master;
     for (int i = 0; i < n; ++i) { aL[i] *= g; aR[i] *= g; }
+    if (modOn) { float pk = 0; for (int i = 0; i < n; ++i) pk = std::max (pk, std::max (std::fabs (aL[i]), std::fabs (aR[i]))); mainLevel = pk; }
     if (bL != nullptr) for (int i = 0; i < n; ++i) { bL[i] *= g; bR[i] *= g; }
+    for (int c = 0; c < kNumChannels; ++c)
+        if (ownL[(size_t) c] != aL) for (int i = 0; i < n; ++i) { ownL[(size_t) c][i] *= g; ownR[(size_t) c][i] *= g; }
+    for (int k = 0; k < 2; ++k)
+        if (fxOutL[(size_t) k] != aL) for (int i = 0; i < n; ++i) { fxOutL[(size_t) k][i] *= g; fxOutR[(size_t) k][i] *= g; }
 
     // pattern note offs
     if (midiOut != nullptr)

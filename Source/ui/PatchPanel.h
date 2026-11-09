@@ -15,6 +15,7 @@ public:
     void setChannel (int ch);
     int getChannel() const { return channel; }
     void refresh();                 // model / names changed
+    void tick();                    // 30 Hz: flash the Mutate button when the sound moves
     void paint (juce::Graphics&) override;
     void resized() override;
 
@@ -27,6 +28,8 @@ private:
     void showPatchMenu (bool repeatLast);
     void runPatchMenuItem (int id);
     void showRandomMenu();
+    void showMutatePanel();
+    void updateMutateButton();
     void showPatchList();
     void stepPatchFile (int dir);
     void applyEditAll (int param, float delta);
@@ -41,10 +44,12 @@ private:
     IconButton menuBtn { IconButton::Icon::Menu }, prevBtn { IconButton::Icon::Prev }, nextBtn { IconButton::Icon::Next },
                openBtn { IconButton::Icon::Folder }, saveBtn { IconButton::Icon::Disk },
                diceBtn { IconButton::Icon::Dice, "Random" }, flavorBtn { IconButton::Icon::Down }, alterBtn { IconButton::Icon::Alter, "Alter" },
-               editAllBtn { IconButton::Icon::None, "EDIT ALL" };
+               editAllBtn { IconButton::Icon::None, "EDIT ALL" }, mutateBtn { IconButton::Icon::None, "Mutate: Off" };
     juce::TextButton nameBox;
     juce::Rectangle<int> headerArea, nameArea;
     int lastPatchMenuItem = 0;
+    uint32_t lastMutCount = 0;
+    int blinkFrames = 0;
     std::unique_ptr<juce::FileChooser> chooser;
     bool editAll = false;
 };

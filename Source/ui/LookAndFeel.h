@@ -17,6 +17,7 @@ namespace col
     const juce::Colour faint    { 0xff4b525d };
     const juce::Colour accent   { 0xffff7a1a };   // signal orange
     const juce::Colour play     { 0xff44d39a };   // playing / running
+    const juce::Colour mod      { 0xff4fd0ff };   // modulation
     const juce::Colour mute     { 0xffff4f4f };
     const juce::Colour select   { 0xff4ea3ff };   // selected pattern
     juce::Colour channel (int ch);

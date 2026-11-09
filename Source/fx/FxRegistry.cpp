@@ -37,7 +37,8 @@ static const std::vector<ModuleInfo>& table()
         { Type::None, "none", "Empty", "", "An empty slot.", {} },
         { Type::Ferric, "ferric", "Ferric", "Drive",
           "Vintage saturation after Felt Instruments' Brut: six preamp characters, a resonant highpass or a bandpass "
-          "filter, a feedback loop from output to input and a tilt EQ at the end. Push Feedback for crunch, whine and chaos.",
+          "filter, an analog-style feedback loop around the preamp and a tilt EQ at the end. Feedback adds bloom, sustain "
+          "and grit to the drive (more gain at low levels, compression as it saturates) without ringing the filter.",
           { ch ("Preamp", 0, { "Glow", "Lab", "Dark", "Meter", "Germanium", "Soviet" }), lin ("Drive", 0.35f, 0, 36, "dB"),
             ch ("Filter", 0, { "Off", "Resonant HP", "Bandpass" }), lg ("Cutoff", 0.35f, 20, 12000, "Hz"), pct ("Resonance", 0.3f),
             pct ("Feedback", 0.f), lin ("Tilt", 0.5f, -6, 6, "dB", true), mix() } },

@@ -57,13 +57,26 @@ juce::AudioProcessorValueTreeState::ParameterLayout Ferrum8Processor::createLayo
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "morph", 1 }, "Sound Morph", NormalisableRange<float> (0.f, 1.f), 0.f, pct));
     for (int ch = 0; ch < NC; ++ch)
         layout.add (std::make_unique<AudioParameterBool> (ParameterID { "mute" + String (ch + 1), 1 }, "Mute " + String (ch + 1), false));
+    for (int m = 0; m < mod::kMods; ++m) // a modulator set to Macro follows its knob, so the host can automate it
+        layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "macro" + String (m + 1), 1 }, "Macro " + String (m + 1),
+                                                           NormalisableRange<float> (0.f, 1.f), 0.f, pct));
     return layout;
 }
 
 Ferrum8Processor::Ferrum8Processor()
     : AudioProcessor (BusesProperties()
                           .withOutput ("Output A", juce::AudioChannelSet::stereo(), true)
-                          .withOutput ("Output B", juce::AudioChannelSet::stereo(), false)),
+                          .withOutput ("Output B", juce::AudioChannelSet::stereo(), true)
+                          .withOutput ("Ch 1", juce::AudioChannelSet::stereo(), true)
+                          .withOutput ("Ch 2", juce::AudioChannelSet::stereo(), true)
+                          .withOutput ("Ch 3", juce::AudioChannelSet::stereo(), true)
+                          .withOutput ("Ch 4", juce::AudioChannelSet::stereo(), true)
+                          .withOutput ("Ch 5", juce::AudioChannelSet::stereo(), true)
+                          .withOutput ("Ch 6", juce::AudioChannelSet::stereo(), true)
+                          .withOutput ("Ch 7", juce::AudioChannelSet::stereo(), true)
+                          .withOutput ("Ch 8", juce::AudioChannelSet::stereo(), true)
+                          .withOutput ("FX 1", juce::AudioChannelSet::stereo(), true)
+                          .withOutput ("FX 2", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "PARAMS", createLayout())
 {
     for (int ch = 0; ch < NC; ++ch)
@@ -80,6 +93,8 @@ Ferrum8Processor::Ferrum8Processor()
     pSwing = apvts.getRawParameterValue ("swing");
     pFill = apvts.getRawParameterValue ("fillRate");
     pMaster = apvts.getRawParameterValue ("master");
+    for (int m = 0; m < mod::kMods; ++m) pMacro[(size_t) m] = apvts.getRawParameterValue ("macro" + juce::String (m + 1));
+    for (int m = 0; m < mod::kMods; ++m) modStates[(size_t) m] = mod::ModState {};
     pTempo = apvts.getRawParameterValue ("tempo");
     pMorph = apvts.getRawParameterValue ("morph");
     for (int ch = 0; ch < NC; ++ch) pMute[(size_t) ch] = apvts.getRawParameterValue ("mute" + juce::String (ch + 1));
@@ -145,6 +160,7 @@ float Ferrum8Processor::getMorph() const { return pMorph->load(); }
 
 void Ferrum8Processor::setPatch (int ch, const Patch& in, bool alsoMorphTarget, bool keepRouting)
 {
+    if (! mutating) mutHomeSet[(size_t) ch] = false; // a new sound: mutation's home follows it
     Patch p = in;
     if (keepRouting)
     {
@@ -171,11 +187,103 @@ void Ferrum8Processor::setPatch (int ch, const Patch& in, bool alsoMorphTarget, 
     sendUiChange();
 }
 
-int Ferrum8Processor::setPatchAtActiveEnd (int ch, const Patch& in)
+//==============================================================================================
+void Ferrum8Processor::setSoundMutation (int ch, const SoundMutation& m)
 {
+    auto& cur = soundMut[(size_t) ch];
+    if (cur.every == 0 && m.every > 0) { mutHome[(size_t) ch] = getActiveEnd (ch); mutHomeSet[(size_t) ch] = true; mutLoops[(size_t) ch] = 0; }
+    cur = m;
+    cur.depth = juce::jlimit (0.f, 1.f, cur.depth);
+    presetDirty = true;
+}
+
+void Ferrum8Processor::mutateSoundNow (int ch)
+{
+    const auto& m = soundMut[(size_t) ch];
+    if (! mutHomeSet[(size_t) ch]) { mutHome[(size_t) ch] = getActiveEnd (ch); mutHomeSet[(size_t) ch] = true; }
+    Patch base = m.mode == 0 ? mutHome[(size_t) ch] : getActiveEnd (ch);
+    if (choiceIndex (base[P_MODEL], 4) != choiceIndex (getActiveEnd (ch)[P_MODEL], 4)) base = getActiveEnd (ch);
+    const Patch p = randomizer.mutateSound (base, m.depth);
+    mutating = true;
+    setPatchAtActiveEnd (ch, p);
+    mutating = false;
+    ++mutCount[(size_t) ch];
+}
+
+void Ferrum8Processor::keepMutationHome (int ch)
+{
+    mutHome[(size_t) ch] = getActiveEnd (ch);
+    mutHomeSet[(size_t) ch] = true;
+}
+
+void Ferrum8Processor::restoreMutationHome (int ch)
+{
+    if (! mutHomeSet[(size_t) ch]) return;
+    pushUndo();
+    mutating = true;
+    setPatchAtActiveEnd (ch, mutHome[(size_t) ch]);
+    mutating = false;
+}
+
+void Ferrum8Processor::soundMutationTick (int loops)
+{
+    if (engine.uiState.load() != (int) SeqState::Playing) return;
+    for (int ch = 0; ch < NC; ++ch)
+    {
+        const auto& m = soundMut[(size_t) ch];
+        if (m.every <= 0) { mutLoops[(size_t) ch] = 0; continue; }
+        mutLoops[(size_t) ch] += loops;
+        if (mutLoops[(size_t) ch] < m.every) continue;
+        mutLoops[(size_t) ch] = 0;
+        mutateSoundNow (ch);
+    }
+}
+
+void Ferrum8Processor::setMods (const std::array<mod::ModState, mod::kMods>& m, bool markDirty)
+{
+    modStates = m;
+    engine.mods.setState (modStates);
+    if (markDirty) presetDirty = true;
+}
+
+int Ferrum8Processor::addModRoute (int m, const mod::Route& r)
+{
+    auto ms = modStates;
+    auto& s = ms[(size_t) m];
+    if (s.type == mod::Type::Off) { const auto keep = s.routes; s = mod::defaultState (mod::Type::LFO); s.routes = keep; }
+    int slot = -1;
+    for (int i = 0; i < mod::kRoutes; ++i) if (s.routes[(size_t) i].kind != mod::Route::None && s.routes[(size_t) i].sameTarget (r)) slot = i;
+    if (slot < 0) for (int i = 0; i < mod::kRoutes; ++i) if (s.routes[(size_t) i].kind == mod::Route::None) { slot = i; break; }
+    if (slot < 0) return -1;
+    s.routes[(size_t) slot] = r;
+    setMods (ms);
+    return slot;
+}
+
+float Ferrum8Processor::modDepthOn (const mod::Route& target) const
+{
+    float d = 0.f;
+    for (const auto& s : modStates)
+    {
+        if (s.type == mod::Type::Off) continue;
+        for (const auto& r : s.routes) if (r.kind != mod::Route::None && r.sameTarget (target)) d += r.depth;
+    }
+    return d;
+}
+
+int Ferrum8Processor::setPatchAtActiveEnd (int ch, const Patch& newSound)
+{
+    Patch in = newSound;
+    in[P_OUTPUT] = getEndA (ch)[P_OUTPUT]; // dice change the sound, never the routing
     const int end = activeEnd();
     const Patch other = end == 0 ? getEndB (ch) : getEndA (ch);
-    if (choiceIndex (other[P_MODEL], 4) != choiceIndex (in[P_MODEL], 4)) { setPatch (ch, in, true); return 2; }
+    if (! mutating) { mutHome[(size_t) ch] = in; mutHomeSet[(size_t) ch] = true; }
+    if (choiceIndex (other[P_MODEL], 4) != choiceIndex (in[P_MODEL], 4))
+    {
+        setPatch (ch, in, true);
+        if (! mutating) { mutHome[(size_t) ch] = in; mutHomeSet[(size_t) ch] = true; }
+        return 2;
+    }
     {
         const juce::ScopedLock sl (stateLock);
         auto& c = chans[(size_t) ch];
@@ -313,10 +421,11 @@ void Ferrum8Processor::prepareToPlay (double sampleRate, int samplesPerBlock)
 
 bool Ferrum8Processor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
+    // main output stereo; every other output stereo or switched off by the host
     if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo()) return false;
-    if (layouts.outputBuses.size() > 1)
+    for (int i = 1; i < layouts.outputBuses.size(); ++i)
     {
-        const auto& b = layouts.outputBuses.getReference (1);
+        const auto& b = layouts.outputBuses.getReference (i);
         if (! b.isDisabled() && b != juce::AudioChannelSet::stereo()) return false;
     }
     return true;
@@ -350,6 +459,7 @@ void Ferrum8Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
     for (int ch = 0; ch < NC; ++ch) g.mutes[ch] = pMute[(size_t) ch]->load() > 0.5f;
     engine.setGlobals (g);
     engine.setMidiConfig (getMidiConfig());
+    for (int m = 0; m < mod::kMods; ++m) engine.mods.setMacro (m, pMacro[(size_t) m]->load());
 
     Transport t;
     if (wrapperType != wrapperType_Standalone)
@@ -377,16 +487,27 @@ void Ferrum8Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
     midi.clear();
     midiOut.clear();
 
-    auto mainBus = getBusBuffer (buffer, false, 0);
-    float* aL = mainBus.getWritePointer (0);
-    float* aR = mainBus.getNumChannels() > 1 ? mainBus.getWritePointer (1) : aL;
-    float* bL = nullptr, *bR = nullptr;
-    if (getBusCount (false) > 1 && getBus (false, 1)->isEnabled())
+    // outputs: A (main), B, Ch 1-8 (each channel's own output), FX 1 and FX 2 (the buses' own outputs).
+    // getBusBuffer() gives an output's channels inside the host's buffer; one the host has switched
+    // off has no channels, and the engine then mixes what would go there into A.
+    Engine::Outputs out;
+    auto pair = [this, &buffer] (int bus, float*& l, float*& r)
     {
-        auto aux = getBusBuffer (buffer, false, 1);
-        if (aux.getNumChannels() >= 2) { bL = aux.getWritePointer (0); bR = aux.getWritePointer (1); }
+        l = r = nullptr;
+        if (bus >= getBusCount (false) || ! getBus (false, bus)->isEnabled()) return;
+        if (getChannelIndexInProcessBlockBuffer (false, bus, 1) >= buffer.getNumChannels()) return; // host gave fewer channels
+        auto b = getBusBuffer (buffer, false, bus);
+        if (b.getNumChannels() >= 2) { l = b.getWritePointer (0); r = b.getWritePointer (1); }
+    };
+    {
+        auto mainBus = getBusBuffer (buffer, false, 0);
+        out.aL = mainBus.getWritePointer (0);
+        out.aR = mainBus.getNumChannels() > 1 ? mainBus.getWritePointer (1) : out.aL;
     }
-    engine.process (aL, aR, bL, bR, n, t, midiIn, &midiOut);
+    pair (1, out.bL, out.bR);
+    for (int c = 0; c < NC; ++c) pair (2 + c, out.chL[(size_t) c], out.chR[(size_t) c]);
+    for (int k = 0; k < 2; ++k) pair (2 + NC + k, out.fxL[(size_t) k], out.fxR[(size_t) k]);
+    engine.process (out, n, t, midiIn, &midiOut);
 
     for (const auto& m : midiOut)
         midi.addEvent (juce::MidiMessage (m.status, m.data1, m.data2), juce::jlimit (0, n - 1, m.offset));
@@ -464,7 +585,8 @@ static juce::ValueTree rackToTree (const fx::RackState& st)
         bt.setProperty ("index", b, nullptr);
         bt.setProperty ("dry", bus.dry, nullptr);
         bt.setProperty ("outDb", bus.outDb, nullptr);
-        bt.setProperty ("output", bus.output == 1 ? "B" : "A", nullptr);
+        static const char* outNames[4] = { "A", "B", "Own", "FX 2" };
+        bt.setProperty ("output", outNames[juce::jlimit (0, 3, bus.output)], nullptr);
         for (int l = 0; l < fx::kLanes; ++l)
         {
             const auto& lane = bus.lanes[(size_t) l];
@@ -506,7 +628,10 @@ static fx::RackState treeToRack (const juce::ValueTree& t)
         auto& bus = st.buses[(size_t) b];
         bus.dry = juce::jlimit (0.f, 1.f, (float) bt.getProperty ("dry", 0.f));
         bus.outDb = juce::jlimit (-24.f, 12.f, (float) bt.getProperty ("outDb", 0.f));
-        bus.output = bt.getProperty ("output", "A").toString() == "B" ? 1 : 0;
+        {
+            const auto o = bt.getProperty ("output", "A").toString();
+            bus.output = o == "B" ? fx::kToB : o == "Own" ? fx::kToOwn : (o == "FX 2" && b == 0) ? fx::kToFx2 : fx::kToA;
+        }
         for (const auto lt : bt)
         {
             const int l = (int) lt.getProperty ("index", -1);
@@ -555,6 +680,94 @@ static std::optional<fx::RackState> legacyRack (const juce::ValueTree& glob)
     fs.ringWave = (int) glob.getProperty ("fxWave", 3);
     fs.pingPong = (float) glob.getProperty ("fxPingPong", 0.f) > 0.5f;
     return fx::FxRack::fromLegacy (fs, (int) glob.getProperty ("fxOut", 0));
+}
+
+//== modulation <-> ValueTree. Channel targets are stored by parameter id, FX targets by bus/lane/slot
+// and the module parameter's name.
+static juce::ValueTree modsToTree (const std::array<mod::ModState, mod::kMods>& ms, const fx::RackState& rack)
+{
+    juce::ValueTree t ("MODS");
+    for (int m = 0; m < mod::kMods; ++m)
+    {
+        const auto& s = ms[(size_t) m];
+        if (s.type == mod::Type::Off) continue;
+        juce::ValueTree mt ("MOD");
+        mt.setProperty ("index", m, nullptr);
+        mt.setProperty ("type", mod::kTypeNames[(int) s.type], nullptr);
+        for (int i = 0; i < mod::kKnobs; ++i) mt.setProperty ("k" + juce::String (i), s.p[i], nullptr);
+        mt.setProperty ("trigger", s.trigger, nullptr);
+        mt.setProperty ("source", s.source, nullptr);
+        juce::StringArray steps;
+        for (float v : s.steps) steps.add (juce::String (v, 3));
+        mt.setProperty ("steps", steps.joinIntoString (","), nullptr);
+        for (const auto& r : s.routes)
+        {
+            if (r.kind == mod::Route::None) continue;
+            juce::ValueTree rt ("ROUTE");
+            rt.setProperty ("depth", r.depth, nullptr);
+            if (r.kind == mod::Route::Channel)
+            {
+                rt.setProperty ("ch", r.ch, nullptr);
+                rt.setProperty ("param", paramDef (r.param).id, nullptr);
+            }
+            else
+            {
+                rt.setProperty ("bus", r.bus, nullptr); rt.setProperty ("lane", r.lane, nullptr); rt.setProperty ("slot", r.slot, nullptr);
+                rt.setProperty ("idx", r.idx, nullptr);
+                const auto type = rack.buses[(size_t) r.bus].lanes[(size_t) r.lane].slots[(size_t) r.slot].type;
+                if (type != fx::Type::None && r.idx < (int) fx::info (type).params.size())
+                    rt.setProperty ("fxParam", fx::info (type).params[(size_t) r.idx].name, nullptr);
+            }
+            mt.appendChild (rt, nullptr);
+        }
+        t.appendChild (mt, nullptr);
+    }
+    return t;
+}
+
+static std::array<mod::ModState, mod::kMods> treeToMods (const juce::ValueTree& t)
+{
+    std::array<mod::ModState, mod::kMods> ms {};
+    for (const auto mt : t)
+    {
+        const int m = (int) mt.getProperty ("index", -1);
+        if (m < 0 || m >= mod::kMods) continue;
+        auto type = mod::Type::Off;
+        for (int k = 0; k < (int) mod::Type::Count; ++k) if (mt["type"].toString() == mod::kTypeNames[k]) type = (mod::Type) k;
+        if (type == mod::Type::Off) continue;
+        auto s = mod::defaultState (type);
+        for (int i = 0; i < mod::kKnobs; ++i) s.p[i] = juce::jlimit (0.f, 1.f, (float) mt.getProperty ("k" + juce::String (i), s.p[i]));
+        s.trigger = juce::jlimit (0, mod::TrigCount - 1, (int) mt.getProperty ("trigger", s.trigger));
+        s.source = juce::jlimit (0, mod::PeakCount - 1, (int) mt.getProperty ("source", s.source));
+        const auto steps = juce::StringArray::fromTokens (mt["steps"].toString(), ",", "");
+        for (int i = 0; i < mod::kSteps && i < steps.size(); ++i) s.steps[(size_t) i] = juce::jlimit (0.f, 1.f, steps[i].getFloatValue());
+        int n = 0;
+        for (const auto rt : mt)
+        {
+            if (n >= mod::kRoutes) break;
+            mod::Route r;
+            r.depth = juce::jlimit (-1.f, 1.f, (float) rt.getProperty ("depth", 0.f));
+            if (rt.hasProperty ("param"))
+            {
+                r.kind = mod::Route::Channel;
+                r.ch = juce::jlimit (0, Ferrum8Processor::NC - 1, (int) rt["ch"]);
+                r.param = -1;
+                for (int p = 0; p < NUM_PATCH_PARAMS; ++p) if (rt["param"].toString() == paramDef (p).id) r.param = p;
+                if (r.param < 0) continue;
+            }
+            else
+            {
+                r.kind = mod::Route::Fx;
+                r.bus = juce::jlimit (0, fx::kBuses - 1, (int) rt["bus"]);
+                r.lane = juce::jlimit (0, fx::kLanes - 1, (int) rt["lane"]);
+                r.slot = juce::jlimit (0, fx::kSlots - 1, (int) rt["slot"]);
+                r.idx = juce::jlimit (0, fx::kMaxParams - 1, (int) rt["idx"]);
+            }
+            s.routes[(size_t) n++] = r;
+        }
+        ms[(size_t) m] = s;
+    }
+    return ms;
 }
 
 static juce::ValueTree patchToTree (const juce::Identifier& type, const Patch& p)
@@ -622,6 +835,13 @@ juce::ValueTree Ferrum8Processor::createPresetTree() const
     {
         auto c = createPatchTree (ch);
         c.setProperty ("index", ch, nullptr);
+        const auto& m = soundMut[(size_t) ch];
+        if (m.every > 0) // sound mutation settings belong to the channel slot
+        {
+            c.setProperty ("mutEvery", m.every, nullptr);
+            c.setProperty ("mutDepth", m.depth, nullptr);
+            c.setProperty ("mutMode", m.mode == 1 ? "Drift" : "Orbit", nullptr);
+        }
         channels.appendChild (c, nullptr);
     }
     t.appendChild (channels, nullptr);
@@ -650,6 +870,7 @@ juce::ValueTree Ferrum8Processor::createPresetTree() const
         if (auto* p = apvts.getParameter (id)) glob.setProperty (id, p->convertFrom0to1 (p->getValue()), nullptr);
     t.appendChild (glob, nullptr);
     t.appendChild (rackToTree (engine.rack.getState()), nullptr);
+    t.appendChild (modsToTree (modStates, engine.rack.getState()), nullptr);
     return t;
 }
 
@@ -665,6 +886,11 @@ void Ferrum8Processor::applyPresetTree (const juce::ValueTree& t, bool loadPatch
             setParamValue (name.toString(), (float) glob.getProperty (name));
         }
         lastMorph = pMorph->load();
+    }
+    if (loadPatches)
+    {
+        const auto modTree = t.getChildWithName ("MODS");
+        setMods (modTree.isValid() ? treeToMods (modTree) : std::array<mod::ModState, mod::kMods> {}, false);
     }
     if (loadPatches)
     {
@@ -687,6 +913,13 @@ void Ferrum8Processor::applyPresetTree (const juce::ValueTree& t, bool loadPatch
             if (tb.isValid()) setMorphTarget (ch, treeToPatch (tb, a));
             chans[(size_t) ch].name = c.getProperty ("name", "").toString();
             chans[(size_t) ch].file = juce::File();
+            SoundMutation m;
+            m.every = juce::jlimit (0, 64, (int) c.getProperty ("mutEvery", 0));
+            m.depth = juce::jlimit (0.f, 1.f, (float) c.getProperty ("mutDepth", 0.3f));
+            m.mode = c.getProperty ("mutMode", "Orbit").toString() == "Drift" ? 1 : 0;
+            soundMut[(size_t) ch] = m;
+            mutHomeSet[(size_t) ch] = false;
+            mutLoops[(size_t) ch] = 0;
         }
     }
     if (loadPatterns)
@@ -715,6 +948,8 @@ void Ferrum8Processor::applyPresetTree (const juce::ValueTree& t, bool loadPatch
 
 void Ferrum8Processor::loadKit (const KitData& k)
 {
+    soundMut = {}; // kits start without sound mutation or modulation
+    setMods ({}, false);
     setParamValue ("morph", k.morph);
     lastMorph = k.morph;
     for (int ch = 0; ch < NC; ++ch)
@@ -1072,7 +1307,7 @@ juce::String Ferrum8Processor::rollAll()
         if (locked[(size_t) ch]) { keep[(size_t) ch] = true; roles[(size_t) ch] = Randomizer::guessFlavor (getCurrentPatch (ch)); continue; }
         Patch cur = getActiveEnd (ch);
         cur[P_CHOKE] = choiceValue ((ch == 5 || ch == 6) ? 1 : 0, 2);
-        cur[P_OUTPUT] = choiceValue (0, paramDef (P_OUTPUT).numChoices);
+        // the channel's Output (A, B, FX 1, FX 2, own output) is routing, not sound: the dice never change it
         setPatchAtActiveEnd (ch, r.kitPatch (roles[(size_t) ch], cur, dice));
         setChannelName (ch, juce::String ("Rnd ") + kFlavorNames[(int) roles[(size_t) ch]]);
     }
@@ -1145,6 +1380,7 @@ void Ferrum8Processor::evolveTick()
     if (starts == lastPatternStarts) return;
     const int loops = (int) (starts - lastPatternStarts);
     lastPatternStarts = starts;
+    soundMutationTick (loops);
     if (dice.evolve == 0 || engine.uiState.load() != (int) SeqState::Playing) { loopsSinceEvolve = 0; return; }
     loopsSinceEvolve += loops;
     if (loopsSinceEvolve < juce::jmax (1, dice.evolveEvery)) return;
@@ -1224,6 +1460,8 @@ bool Ferrum8Processor::exportPatternAudio (const juce::File& f, int pattern, int
     const int block = 512;
     e->prepare (sr, block);
     e->rack.setState (engine.rack.getState());
+    e->mods.setState (modStates);
+    for (int m = 0; m < mod::kMods; ++m) e->mods.setMacro (m, pMacro[(size_t) m]->load());
     for (int c = 0; c < NC; ++c)
         for (int i = 0; i < NP; ++i) e->setPatchParam (c, i, getPatchValue (c, i));
     for (int p = 0; p < kNumPatterns; ++p) e->patterns.set (p, engine.patterns.get (p), true);

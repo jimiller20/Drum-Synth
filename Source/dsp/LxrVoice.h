@@ -28,7 +28,7 @@ public:
 
     float panLeft() const { return triggeredPanL; }
     float panRight() const { return triggeredPanR; }
-    int output() const { return choiceIndex (base[P_OUTPUT], 4); } // 0 A, 1 B, 2 FX 1, 3 FX 2
+    int output() const { return choiceIndex (base[P_OUTPUT], 5); } // 0 A, 1 B, 2 FX 1, 3 FX 2, 4 own output
     bool chokes() const { return choiceIndex (base[P_CHOKE], 2) == 1; }
     int lfoRetrigSource() const { return choiceIndex (base[P_LFO_RETRIG], 9); } // 0 free, 1..8 ch
     bool isSilent() const { return silent; }
@@ -40,8 +40,11 @@ public:
 
 private:
     void applyParam (int p, float v);
-    float eff (int p) const { return lxr::clamp01 (base[(size_t) p] + hitOff[(size_t) p]); } // base + per-hit offset
+    float eff (int p) const { return lxr::clamp01 (base[(size_t) p] + hitOff[(size_t) p] + modOff[(size_t) p]); } // base + per-hit + modulation
     void setHitOffset (int p, float off);
+public:
+    void setModOffset (int p, float off);   // the modulation matrix (0 = none; the voice is unchanged)
+private:
     float bip() { return (float) (hitRng.next() >> 8) * (2.0f / 16777216.0f) - 1.0f; }
     void applyModulation();
     void controlBlock();              // the firmware's calc*Async(), once per control block
@@ -91,6 +94,7 @@ private:
 
     // per-hit articulation (all neutral by default so the LXR sound is untouched)
     Patch hitOff {};                    // offsets added to the patch for this hit (decay, transient, filter)
+    Patch modOff {};                    // offsets from the modulation matrix
     float hitGain = 1.f, hitPitch = 1.f, veloVol = 1.f;
     float shelfG = 1.f, shelfA = 0.25f, shelfZ = 0.f;   // high shelf at ~2.2 kHz (tone / ghost darkening)
     float rampPos = 1.f, rampInc = 0.f;                // softened attack

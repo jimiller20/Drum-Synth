@@ -107,6 +107,40 @@ becomes FX 1 with the matching LXR module, Output "FX" becomes FX 1.
 - **Vary** (FEEL group) now also changes cymbals and hi-hats on every hit: random modulator
   phases, slight modulator detune and FM depth, so no two hits sound the same.
 
+## Modulation, sound mutation, outputs (added Nov 9 2026)
+
+- **MOD tab** (third tab, or Tab key): six modulators - **LFO** (6 shapes, synced to the bar or free,
+  restart on a channel's hits), **Envelope** (attack, hold, decay, sustain, release, velocity;
+  triggered by a channel, any hit, every beat or every bar), **Sample & Hold** (new random value
+  per clock step or hit, glide, chance), **Peak Controller** (follows a channel's or output A's
+  level, like FL Studio's: base, volume, tension, attack, release - use a negative depth to duck),
+  **Random Drift**, **Step Lane** (16 drawn values in time) and **Macro** (host-automatable
+  "Macro 1-6" parameters). Each has up to eight targets: any channel sound parameter or any FX
+  module parameter, with a bipolar depth. Right-click any sound or FX knob > **Modulate with** to
+  add a target; modulated knobs show their range as a blue outer arc. Modulators run once per
+  64-sample control block (the LXR's own control rate); with no routes the engine is unchanged.
+- **Sound mutation** (Mutate button in the sound header): each channel can move its own sound a
+  little every 1-16 pattern loops (pitch, decay, tone, filter, noise, FM depth, transient,
+  drive), at its own depth. Orbit returns to a home sound each time (Keep sets it, Home goes
+  back); Drift lets the sound travel. Model, level and routing never change.
+- **Outputs**: 12 stereo outputs - A (main), B, **Ch 1-Ch 8** and **FX 1 / FX 2**. Set a channel's
+  Output to **Own** to send it to its own output; an FX bus can go to A, B, its own output, or (FX 1)
+  **into FX 2** for series processing. In FL Studio: open the plugin's wrapper settings
+  (Processing tab) and give each output a mixer track; an output the host does not use falls back
+  to A. Sidechain from the kick by giving Ch 1 its own mixer track.
+- **FX rack clarity**: a routing map (sends > bus > destination) for all three buses, a line that
+  states the selected bus's signal flow in words, Insert / Parallel buttons for the Dry Thru level,
+  and labels for lanes (parallel) and slots (series).
+- **Ferric feedback** is now an analog-style loop: no comb delay, the loop is closed around the
+  preamp at the oversampled rate through a 70 Hz coupling high-pass and a 4.2 kHz band limit, with
+  rail-style soft limiting and a loop gain normalised below 1. It adds gain, grit and sustain to
+  quiet parts (a -36 dBFS sine gets ~8 dB louder with 8% THD at 100%) and never howls. The drive
+  itself is bit-identical at Feedback 0.
+- **Cymbals**: shorter (crash ~1.6 s, ride ~1.4 s, splash ~0.85 s to -40 dB), gentler waveforms,
+  low drive, and a measured level: every random cymbal is fitted to about -26 LUFS per hit, roughly
+  9 dB under a typical snare.
+- The dice never change a channel's Output.
+
 ## Status (handoff, Oct 28 2026)
 
 Done and tested on Linux (Windows build not yet tried):
@@ -120,7 +154,7 @@ Done and tested on Linux (Windows build not yet tried):
   C2-G2 mute, C3-B3 patterns, C4 stop), pitched mode, pattern launch modes, MIDI out.
 - **Randomizer**: per-sound recipes (kick, tom, perc, zap, snare, clap, hats, cymbal, chaos),
   alter, randomize all, random morph targets, rhythm-aware pattern randomizer.
-- **Plugin**: 392 host parameters (the FX rack is saved with presets, not as host parameters), morph A/B end points, presets (.f8preset), drum patches
+- **Plugin**: 398 host parameters including Macro 1-6 (the FX rack and modulators are saved with presets), morph A/B end points, presets (.f8preset), drum patches
   (.f8drum), undo/redo (40), MIDI-file export + drag-out, WAV export, 5 factory kits.
 - **UI**: all sections working, DRUMS and FX RACK tabs, zoom 60-200%. Snapshots look right.
 - Tests: `tests/engine_identity.cpp` (the sequencer plays the LXR voices bit-identically when expression and feel are off; build line at the top of the file), `tests/render_test.cpp` (engine), `tests/plugin_tests.cpp` (processor + UI snapshots,

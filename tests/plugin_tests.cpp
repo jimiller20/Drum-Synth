@@ -67,7 +67,7 @@ int main (int argc, char** argv)
     auto proc = std::make_unique<Ferrum8Processor>();
     proc->setRateAndBufferSizeDetails (48000, 512);
     proc->prepareToPlay (48000, 512);
-    CHECK (proc->getParameters().size() == 8 * NUM_PATCH_PARAMS + 16, "parameter count");
+    CHECK (proc->getParameters().size() == 8 * NUM_PATCH_PARAMS + 22, "parameter count");
 
     // MIDI note C1 triggers channel 1
     {
@@ -558,6 +558,310 @@ int main (int argc, char** argv)
         }
     }
 
+    // ---- round 3: routing kept by dice, quieter cymbals, Ferric feedback, outputs, mutation, modulation
+    {
+        auto p = std::make_unique<Ferrum8Processor>();
+        p->setRateAndBufferSizeDetails (48000, 512);
+        p->prepareToPlay (48000, 512);
+        const int nOut = paramDef (P_OUTPUT).numChoices;
+        auto outs = [&p, nOut]
+        {
+            std::array<int, 8> o {};
+            for (int c = 0; c < 8; ++c) o[(size_t) c] = choiceIndex (p->getPatchValue (c, P_OUTPUT), nOut);
+            return o;
+        };
+        const int want[8] = { 4, 2, 0, 3, 1, 2, 0, 4 };
+        for (int c = 0; c < 8; ++c) p->setPatchValue (c, P_OUTPUT, choiceValue (want[c], nOut));
+        const auto before = outs();
+        p->rollSounds();
+        bool kept = outs() == before;
+        p->rollAll();
+        kept &= outs() == before;
+        p->setParamValue ("morph", 1.f); runBlocks (*p, 2, nullptr);
+        p->rollSounds();
+        kept &= outs() == before;
+        for (int c = 0; c < 8; ++c) p->setPatchAtActiveEnd (c, p->randomizer.patch (Flavor::Chaos, p->getActiveEnd (c)));
+        kept &= outs() == before;
+        for (int c = 0; c < 8; ++c) p->setPatchAtActiveEnd (c, p->randomizer.alter (p->getActiveEnd (c)));
+        kept &= outs() == before;
+        p->setParamValue ("morph", 0.f); runBlocks (*p, 2, nullptr);
+        CHECK (kept, "Sounds, All, channel dice and Alter never change a channel's Output (FX routing)");
+
+        // cymbals sit under the snare and ring for at most ~2.3 s
+        {
+            Randomizer r (31);
+            DiceSettings d;
+            float worstLoud = -100.f, snareLoud = 0.f;
+            for (int i = 0; i < 20; ++i) snareLoud += Randomizer::hitLoudness (r.patch (Flavor::Snare, defaultPatch (Model::Snare))) / 20.f;
+            bool shortEnough = true;
+            for (int i = 0; i < 40; ++i)
+            {
+                d.character = (KitCharacter) (i % (int) KitCharacter::Count);
+                d.genre = i % (int) Genre::Count;
+                const Patch q = r.kitPatch (Flavor::Cymbal, defaultPatch (Model::Cymbal), d);
+                worstLoud = std::max (worstLoud, Randomizer::hitLoudness (q));
+                Voice v; v.prepare (48000, 3);
+                for (int k = 0; k < NUM_PATCH_PARAMS; ++k) v.setParam (k, q[(size_t) k]);
+                v.trigger (1.f, 60);
+                std::vector<float> x (48000 * 4);
+                v.render (x.data(), (int) x.size());
+                float pk = 0; for (float y : x) pk = std::max (pk, std::abs (y));
+                float late = 0; for (size_t k = (size_t) (48000 * 2.6); k < x.size(); ++k) late = std::max (late, std::abs (x[k]));
+                if (late > pk * 0.01f) shortEnough = false;
+            }
+            std::printf ("     loudest random cymbal %.1f LUFS, average random snare %.1f LUFS\n", worstLoud, snareLoud);
+            CHECK (worstLoud < snareLoud - 4.f, "random cymbals sit under the snare (every genre and kit character)");
+            CHECK (shortEnough, "random cymbals have faded by 40 dB within 2.6 s");
+        }
+
+        // Ferric feedback: no howl, more gain and grit at low levels
+        {
+            namespace F = ferrum::fx;
+            bool silentAfter = true;
+            float quiet0 = 0, quiet1 = 0;
+            for (const char* pre : { "Glow", "Lab", "Dark", "Meter", "Germanium", "Soviet" })
+                for (const char* filt : { "Off", "Resonant HP", "Bandpass" })
+                    for (float fb : { 0.f, 100.f })
+                    {
+                        F::RackState st;
+                        F::setSlot (st.buses[0].lanes[0].slots[0], F::Type::Ferric, { { "Preamp", 0, pre }, { "Drive", 24 }, { "Filter", 0, filt },
+                                                                                       { "Resonance", 80 }, { "Feedback", fb } });
+                        F::FxRack r; r.prepare (48000, 512); r.setState (st);
+                        std::vector<float> L (48000 * 2), R (48000 * 2);
+                        Random rnd (3);
+                        for (int i = 0; i < 24000; ++i) L[(size_t) i] = R[(size_t) i] = (rnd.nextFloat() * 2.f - 1.f) * std::exp (-(float) (i % 6000) / 900.f) * 0.7f;
+                        for (size_t i = 0; i < L.size(); i += 512) r.process (0, L.data() + i, R.data() + i, (int) std::min<size_t> (512, L.size() - i));
+                        float tail = 0; for (size_t i = 48000 + 12000; i < L.size(); ++i) tail = std::max (tail, std::abs (L[i]));
+                        if (tail > 0.001f) { silentAfter = false; std::printf ("     %s %s fb %.0f rings %.4f\n", pre, filt, fb, tail); }
+                    }
+            for (float fb : { 0.f, 100.f })
+            {
+                F::RackState st;
+                F::setSlot (st.buses[0].lanes[0].slots[0], F::Type::Ferric, { { "Preamp", 0, "Glow" }, { "Drive", 6 }, { "Feedback", fb } });
+                F::FxRack r; r.prepare (48000, 512); r.setState (st);
+                std::vector<float> L (48000), R (48000);
+                for (int i = 0; i < 48000; ++i) L[(size_t) i] = R[(size_t) i] = 0.016f * std::sin (6.2831853f * 220.f * (float) i / 48000.f);
+                for (int i = 0; i < 48000; i += 512) r.process (0, L.data() + i, R.data() + i, std::min (512, 48000 - i));
+                float pk = 0; for (int i = 24000; i < 48000; ++i) pk = std::max (pk, std::abs (L[(size_t) i]));
+                (fb > 0 ? quiet1 : quiet0) = pk;
+            }
+            std::printf ("     Ferric quiet sine: feedback 0 -> %.4f, feedback 100 -> %.4f\n", quiet0, quiet1);
+            CHECK (silentAfter, "Ferric feedback never howls or rings on after the input stops (any preamp, filter, resonance)");
+            CHECK (quiet1 > quiet0 * 1.8f, "Ferric feedback adds gain to quiet signals (analog-style regeneration)");
+        }
+
+        // per-channel outputs and FX bus destinations
+        {
+            auto q = std::make_unique<Ferrum8Processor>();
+            q->setRateAndBufferSizeDetails (48000, 512);
+            q->prepareToPlay (48000, 512);
+            const int total = q->getTotalNumOutputChannels();
+            std::printf ("     output buses %d, output channels %d\n", q->getBusCount (false), total);
+            CHECK (total == 24 && q->getBusCount (false) == 12, "12 stereo outputs: A, B, Ch 1-8, FX 1, FX 2");
+            if (total != 24) return 1;
+            auto hit = [&q, total] (int ch)
+            {
+                AudioBuffer<float> buf (total, 512 * 20);
+                AudioBuffer<float> blk (total, 512);
+                q->getEngine().reset();
+                for (int b = 0; b < 20; ++b)
+                {
+                    blk.clear();
+                    MidiBuffer m; if (b == 0) m.addEvent (MidiMessage::noteOn (10, 36 + ch, (uint8) 127), 0);
+                    q->processBlock (blk, m);
+                    for (int c = 0; c < total; ++c) buf.copyFrom (c, b * 512, blk, c, 0, 512);
+                }
+                std::array<float, 12> mags {};
+                for (int bus = 0; bus < 12; ++bus) mags[(size_t) bus] = buf.getMagnitude (bus * 2, 0, buf.getNumSamples());
+                return mags;
+            };
+            q->setPatchValue (0, P_OUTPUT, choiceValue (4, nOut)); // kick on its own output
+            auto m1 = hit (0);
+            CHECK (m1[2] > 0.05f && m1[0] < 1e-6f, "a channel set to Own plays only on its own output (Ch 1)");
+            q->setPatchValue (0, P_OUTPUT, choiceValue (2, nOut)); // kick into FX 1
+            fx::RackState st;
+            fx::setSlot (st.buses[0].lanes[0].slots[0], fx::Type::Utility, { { "Gain", -6 } });
+            st.buses[0].output = fx::kToOwn;
+            q->getRack().setState (st);
+            auto m2 = hit (0);
+            CHECK (m2[10] > 0.02f && m2[0] < 1e-6f && m2[2] < 1e-6f, "an FX bus set to its own output plays on FX 1 out");
+            st.buses[0].output = fx::kToFx2;
+            fx::setSlot (st.buses[1].lanes[0].slots[0], fx::Type::Utility, { { "Gain", -12 } });
+            st.buses[1].output = fx::kToA;
+            q->getRack().setState (st);
+            auto m3 = hit (0);
+            const float viaBoth = m3[0];
+            st.buses[0].output = fx::kToA;
+            q->getRack().setState (st);
+            auto m4 = hit (0);
+            std::printf ("     FX 1 alone %.3f, FX 1 into FX 2 %.3f\n", m4[0], viaBoth);
+            CHECK (viaBoth > 0.f && std::abs (viaBoth / m4[0] - 0.251f) < 0.05f, "FX 1 into FX 2 runs the buses in series");
+            q->getBus (false, 2)->enable (false);
+            q->setPatchValue (0, P_OUTPUT, choiceValue (4, nOut));
+            q->prepareToPlay (48000, 512);
+            const int total2 = q->getTotalNumOutputChannels();
+            AudioBuffer<float> blk (total2, 512);
+            float main = 0;
+            for (int b = 0; b < 10; ++b)
+            {
+                blk.clear();
+                MidiBuffer m; if (b == 0) m.addEvent (MidiMessage::noteOn (10, 36, (uint8) 127), 0);
+                q->processBlock (blk, m);
+                main = std::max (main, blk.getMagnitude (0, 0, 512));
+            }
+            CHECK (main > 0.05f, "an own output the host switched off falls back to output A");
+        }
+
+        // sound mutation
+        {
+            p->loadKit (factoryKits()[0]);
+            Ferrum8Processor::SoundMutation sm; sm.every = 2; sm.depth = 0.5f; sm.mode = 0;
+            p->setSoundMutation (1, sm);
+            const Patch home = p->getActiveEnd (1);
+            const Patch other = p->getActiveEnd (0);
+            float maxMove = 0.f;
+            bool same = true;
+            for (int i = 0; i < 12; ++i)
+            {
+                p->mutateSoundNow (1);
+                const Patch now = p->getActiveEnd (1);
+                for (int k = 0; k < NUM_PATCH_PARAMS; ++k)
+                    if (paramDef (k).numChoices == 0) maxMove = std::max (maxMove, std::abs (now[(size_t) k] - home[(size_t) k]));
+                    else if (k != P_TRANS_WAVE) same &= now[(size_t) k] == home[(size_t) k];
+                same &= now[P_MODEL] == home[P_MODEL] && now[P_LEVEL] == home[P_LEVEL] && now[P_OUTPUT] == home[P_OUTPUT];
+            }
+            bool othersStill = true;
+            const Patch other2 = p->getActiveEnd (0);
+            for (int k = 0; k < NUM_PATCH_PARAMS; ++k) othersStill &= other[(size_t) k] == other2[(size_t) k];
+            std::printf ("     orbit mutation: largest move from home %.3f\n", maxMove);
+            CHECK (maxMove > 0.01f && maxMove <= 0.14f * 0.5f + 1e-4f && same, "Orbit mutation stays near the home sound and never changes model, level or routing");
+            CHECK (othersStill, "mutating one channel leaves the others alone");
+            const auto tree = p->createPresetTree();
+            p->setSoundMutation (1, {});
+            p->applyPresetTree (tree);
+            CHECK (p->getSoundMutation (1).every == 2 && std::abs (p->getSoundMutation (1).depth - 0.5f) < 1e-4f, "mutation settings are saved per channel");
+            p->setSoundMutation (1, {});
+        }
+
+        // modulation
+        {
+            auto render = [] (Ferrum8Processor& pr, int blocks, int note = -1)
+            {
+                std::vector<float> L;
+                AudioBuffer<float> blk (pr.getTotalNumOutputChannels(), 512);
+                for (int b = 0; b < blocks; ++b)
+                {
+                    blk.clear();
+                    MidiBuffer m; if (note >= 0 && b % 8 == 0) m.addEvent (MidiMessage::noteOn (10, note, (uint8) 127), 0);
+                    pr.processBlock (blk, m);
+                    for (int i = 0; i < 512; ++i) L.push_back (blk.getSample (0, i));
+                }
+                return L;
+            };
+            auto q = std::make_unique<Ferrum8Processor>();
+            q->setRateAndBufferSizeDetails (48000, 512);
+            q->prepareToPlay (48000, 512);
+            q->loadKit (factoryKits()[0]);
+            const auto dry = render (*q, 64, 36);
+            q->getEngine().reset();
+            auto ms = q->getMods();
+            ms[0] = mod::defaultState (mod::Type::LFO);
+            ms[0].p[2] = mod::choiceToNorm (0, 2);   // free running
+            ms[0].p[5] = 0.6f;                      // a few Hz
+            mod::Route r; r.kind = mod::Route::Channel; r.ch = 0; r.param = P_OSC_COARSE; r.depth = 0.2f;
+            ms[0].routes[0] = r;
+            q->setMods (ms);
+            const auto wet = render (*q, 64, 36);
+            float d = 0; for (size_t i = 0; i < dry.size(); ++i) d = std::max (d, std::abs (dry[i] - wet[i]));
+            CHECK (d > 0.05f, "an LFO routed to the kick's pitch changes the kick");
+            q->setMods ({});
+            q->getEngine().reset();
+            const auto back = render (*q, 64, 36);
+            float d2 = 0; for (size_t i = 0; i < dry.size(); ++i) d2 = std::max (d2, std::abs (dry[i] - back[i]));
+            CHECK (d2 == 0.f, "removing the routes gives every parameter its own value back (bit-identical)");
+            // peak controller ducking: the kick's level pushes channel 4's level down
+            {
+                auto pr = std::make_unique<Ferrum8Processor>();
+                pr->setRateAndBufferSizeDetails (48000, 512);
+                pr->prepareToPlay (48000, 512);
+                pr->loadKit (factoryKits()[0]);
+                auto m2 = pr->getMods();
+                m2[1] = mod::defaultState (mod::Type::Peak);
+                m2[1].source = mod::PeakCh1;
+                m2[1].p[1] = 1.f; // volume
+                mod::Route duck; duck.kind = mod::Route::Channel; duck.ch = 2; duck.param = P_LEVEL; duck.depth = -1.f;
+                m2[1].routes[0] = duck;
+                pr->setMods (m2);
+                pr->getEngine().reset();
+                AudioBuffer<float> blk (pr->getTotalNumOutputChannels(), 512);
+                float before = 1.f, maxVal = 0.f;
+                for (int b = 0; b < 200; ++b)
+                {
+                    blk.clear();
+                    MidiBuffer m; if (b == 4) m.addEvent (MidiMessage::noteOn (10, 36, (uint8) 127), 0);
+                    pr->processBlock (blk, m);
+                    if (b == 3) before = pr->modValue (1);
+                    maxVal = std::max (maxVal, pr->modValue (1));
+                }
+                const float after = pr->modValue (1);
+                std::printf ("     peak controller following the kick: before %.2f, peak %.2f, 2 s later %.2f\n", before, maxVal, after);
+                CHECK (before < 0.01f && maxVal > 0.3f && after < 0.05f, "a peak controller follows a channel's level");
+            }
+            // envelope triggered by channel 1, sample and hold, macro
+            {
+                auto pr = std::make_unique<Ferrum8Processor>();
+                pr->setRateAndBufferSizeDetails (48000, 512);
+                pr->prepareToPlay (48000, 512);
+                auto m3 = pr->getMods();
+                m3[0] = mod::defaultState (mod::Type::Envelope); m3[0].trigger = mod::TrigCh1;
+                m3[1] = mod::defaultState (mod::Type::SampleHold); m3[1].trigger = mod::TrigAny;
+                m3[2] = mod::defaultState (mod::Type::Macro);
+                mod::Route lvl; lvl.kind = mod::Route::Channel; lvl.ch = 3; lvl.param = P_DECAY; lvl.depth = 0.1f;
+                for (int i = 0; i < 3; ++i) m3[(size_t) i].routes[0] = lvl;
+                pr->setMods (m3);
+                pr->setParamValue ("macro3", 0.7f);
+                AudioBuffer<float> blk (pr->getTotalNumOutputChannels(), 512);
+                auto block = [&] (bool hit) { blk.clear(); MidiBuffer m; if (hit) m.addEvent (MidiMessage::noteOn (10, 36, (uint8) 127), 0); pr->processBlock (blk, m); };
+                block (false); block (false);
+                const float envBefore = pr->modValue (0), shBefore = pr->modValue (1);
+                block (true); block (false); block (false);
+                const float envAfter = pr->modValue (0), shAfter = pr->modValue (1);
+                CHECK (envBefore < 0.01f && envAfter > 0.2f, "an envelope starts when its channel is hit");
+                CHECK (shAfter != shBefore, "sample and hold takes a new value on a hit");
+                CHECK (std::abs (pr->modValue (2) - 0.7f) < 1e-4f, "a macro follows its host parameter");
+                // preset round trip
+                const auto tree = pr->createPresetTree();
+                pr->setMods ({});
+                pr->applyPresetTree (tree);
+                const auto& got = pr->getMods();
+                CHECK (got[0].type == mod::Type::Envelope && got[0].trigger == mod::TrigCh1 && got[0].routes[0].kind == mod::Route::Channel
+                           && got[0].routes[0].param == P_DECAY && std::abs (got[0].routes[0].depth - 0.1f) < 1e-5f && got[2].type == mod::Type::Macro,
+                       "modulators and their targets are saved with the preset");
+            }
+            // an LFO on an FX parameter
+            {
+                auto pr = std::make_unique<Ferrum8Processor>();
+                pr->setRateAndBufferSizeDetails (48000, 512);
+                pr->prepareToPlay (48000, 512);
+                pr->setPatchValue (0, P_OUTPUT, choiceValue (2, nOut));
+                fx::RackState st;
+                fx::setSlot (st.buses[0].lanes[0].slots[0], fx::Type::Utility, {});
+                pr->getRack().setState (st);
+                const auto plain = render (*pr, 24, 36);
+                auto m4 = pr->getMods();
+                m4[0] = mod::defaultState (mod::Type::LFO);
+                m4[0].p[0] = mod::choiceToNorm (4, 6); m4[0].p[2] = mod::choiceToNorm (0, 2); m4[0].p[5] = 0.7f;
+                mod::Route fr; fr.kind = mod::Route::Fx; fr.bus = 0; fr.lane = 0; fr.slot = 0; fr.idx = fx::paramIndex (fx::Type::Utility, "Gain"); fr.depth = -0.5f;
+                m4[0].routes[0] = fr;
+                pr->setMods (m4);
+                pr->getEngine().reset();
+                const auto moved = render (*pr, 24, 36);
+                float d3 = 0; for (size_t i = 0; i < plain.size(); ++i) d3 = std::max (d3, std::abs (plain[i] - moved[i]));
+                CHECK (d3 > 0.02f, "an LFO routed to an FX parameter changes the bus");
+            }
+        }
+    }
+
     // ---- FX rack ---------------------------------------------------------------------------
     {
         namespace F = ferrum::fx;
@@ -849,7 +1153,36 @@ int main (int argc, char** argv)
                 fe->getFxPanel().showBus (2);
                 pump (100);
                 snapshot (*ed, outDir.getChildFile ("ui_fx_master.png"));
+                // FX 1 feeding FX 2, plus modulation on the MOD tab and on the knobs
+                {
+                    auto st2 = proc->getRack().getState();
+                    st2.buses[0].output = fx::kToFx2;
+                    proc->getRack().setState (st2);
+                    auto ms = proc->getMods();
+                    ms[0] = mod::defaultState (mod::Type::LFO);
+                    mod::Route a; a.kind = mod::Route::Channel; a.ch = 3; a.param = P_DECAY; a.depth = 0.25f;
+                    mod::Route b; b.kind = mod::Route::Fx; b.bus = 0; b.lane = 0; b.slot = 0; b.idx = 1; b.depth = -0.4f;
+                    ms[0].routes[0] = a; ms[0].routes[1] = b;
+                    ms[1] = mod::defaultState (mod::Type::Peak);
+                    mod::Route c; c.kind = mod::Route::Channel; c.ch = 4; c.param = P_LEVEL; c.depth = -0.6f;
+                    ms[1].routes[0] = c;
+                    ms[2] = mod::defaultState (mod::Type::Steps);
+                    ms[3] = mod::defaultState (mod::Type::Envelope);
+                    proc->setMods (ms);
+                    proc->sendUiChange(); pump (100);
+                    fe->getFxPanel().showBus (0);
+                    pump (100);
+                    snapshot (*ed, outDir.getChildFile ("ui_fx_series.png"));
+                    fe->setTab (2);
+                    for (int i = 0; i < 20; ++i) { fe->getModPanel().tick(); pump (5); }
+                    snapshot (*ed, outDir.getChildFile ("ui_mod_lfo.png"));
+                    fe->getModPanel().select (2);
+                    pump (60);
+                    snapshot (*ed, outDir.getChildFile ("ui_mod_steps.png"));
+                }
+                proc->editorChannel = 3;
                 fe->setTab (0);
+                proc->sendUiChange();
                 pump (100);
                 snapshot (*ed, outDir.getChildFile ("ui_fx_overview.png"));
             }

@@ -40,11 +40,11 @@ const std::vector<Chain>& chains()
               setSlot (at (b, 0, 0), Type::Ferric, { { "Preamp", 0, "Lab" }, { "Drive", 18 }, { "Filter", 0, "Resonant HP" }, { "Cutoff", 90 },
                                                       { "Resonance", 35 }, { "Feedback", 20 }, { "Tilt", 1.5f }, { "Mix", 100 } });
           } },
-        { "Brut Scream", "Ferric, Soviet preamp, bandpass inside a hot feedback loop. Whistles and screams - ride the Feedback knob.", false,
+        { "Brut Scream", "Ferric on the Soviet preamp with heavy feedback into a resonant bandpass: sputtering, sustaining, nasal fuzz.", false,
           [] (RackState::Bus& b)
           {
               setSlot (at (b, 0, 0), Type::Ferric, { { "Preamp", 0, "Soviet" }, { "Drive", 26 }, { "Filter", 0, "Bandpass" }, { "Cutoff", 1400 },
-                                                      { "Resonance", 55 }, { "Feedback", 55 }, { "Tilt", -2 }, { "Mix", 70 } });
+                                                      { "Resonance", 55 }, { "Feedback", 85 }, { "Tilt", -2 }, { "Mix", 70 } });
           } },
         { "Germanium Punch", "Ferric's germanium preamp: sag and punch, darker tilt. Thickens kicks and toms.", false,
           [] (RackState::Bus& b)

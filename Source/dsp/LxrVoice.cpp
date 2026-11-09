@@ -62,6 +62,13 @@ void Voice::setParam (int p, float v)
     applyParam (p, eff (p));
 }
 
+void Voice::setModOffset (int p, float off)
+{
+    if (p < 0 || p >= NUM_PATCH_PARAMS || off == modOff[(size_t) p]) return;
+    modOff[(size_t) p] = off;
+    applyParam (p, eff (p));
+}
+
 void Voice::setHitOffset (int p, float off)
 {
     if (off == hitOff[(size_t) p]) return;
@@ -254,7 +261,7 @@ void Voice::applyModulation()
     lfoValue = lfo.calc (lfoRng);
     auto modded = [this] (int d)
     {
-        float v = base[(size_t) d] + hitOff[(size_t) d];
+        float v = base[(size_t) d] + hitOff[(size_t) d] + modOff[(size_t) d];
         if (d == lfoDest) v += lfoAmount * (lfoValue * 2.f - 1.f);
         if (d == velDest) v += velAmount * (velo * 2.f - 1.f);
         applyParam (d, clamp01 (v));

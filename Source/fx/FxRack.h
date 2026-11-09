@@ -26,6 +26,9 @@ namespace ferrum::fx
 {
 constexpr int kBuses = 3, kLanes = 3, kSlots = 5;
 constexpr int kMasterBus = 2;
+// where an FX bus goes (RackState::Bus::output): main A, output B, the bus's own plugin output,
+// or (FX 1 only) into FX 2, so the two buses run in series
+constexpr int kToA = 0, kToB = 1, kToOwn = 2, kToFx2 = 3;
 const char* busName (int bus);
 
 struct RackState // plain copy for files, undo and the offline renderer
@@ -76,6 +79,14 @@ public:
     void setTempo (double bpm);
     void process (int bus, float* L, float* R, int n);       // in place
     float meter (int bus) const { return buses[(size_t) bus].meter.load(); }
+    // modulation offsets (audio thread): added to the parameters for the next process() calls
+    void clearModulation() { if (modUsed) { for (auto& b : modOff) for (auto& l : b) for (auto& s : l) s.fill (0.f); modUsed = false; } }
+    void addModulation (int bus, int lane, int slot, int idx, float v)
+    {
+        if (bus < 0 || bus >= kBuses || lane < 0 || lane >= kLanes || slot < 0 || slot >= kSlots || idx < 0 || idx >= kMaxParams) return;
+        modOff[(size_t) bus][(size_t) lane][(size_t) slot][(size_t) idx] += v;
+        modUsed = true;
+    }
 
     void reset(); // clears tails (audio stopped)
 
@@ -110,6 +121,8 @@ private:
     void trash (Module* m);                   // audio thread
 
     std::array<Bus, kBuses> buses;
+    std::array<std::array<std::array<std::array<float, kMaxParams>, kSlots>, kLanes>, kBuses> modOff {};
+    bool modUsed = false;
     double sr = 44100.0, bpm = 120.0;
     int maxBlock = 512;
     std::vector<float> inL, inR, laneL, laneR, accL, accR;

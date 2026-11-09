@@ -287,6 +287,11 @@ void FxRack::process (int bus, float* L, float* R, int n)
                 if (s.active == nullptr || s.bypass.load()) continue;
                 float p[kMaxParams];
                 for (int i = 0; i < kMaxParams; ++i) p[i] = s.params[i].load (std::memory_order_relaxed);
+                if (modUsed)
+                {
+                    const auto& mo = modOff[(size_t) bus][(size_t) l][(size_t) (&s - lane.slots.data())];
+                    for (int i = 0; i < kMaxParams; ++i) if (mo[(size_t) i] != 0.f) p[i] = std::clamp (p[i] + mo[(size_t) i], 0.f, 1.f);
+                }
                 s.active->setTempo (bpm);
                 s.active->process (laneL.data(), laneR.data(), m, p);
             }

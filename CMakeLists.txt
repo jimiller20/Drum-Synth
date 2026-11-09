@@ -59,6 +59,7 @@ set(FERRUM_SOURCES
     Source/fx/FxLxr.cpp
     Source/fx/FxChains.cpp
     Source/engine/Engine.cpp
+    Source/engine/Modulation.cpp
     Source/engine/Groove.cpp
     Source/engine/Randomizer.cpp
     Source/engine/Kits.cpp
@@ -70,7 +71,8 @@ set(FERRUM_SOURCES
     Source/ui/PatternPanel.cpp
     Source/ui/TopPanels.cpp
     Source/ui/DicePanel.cpp
-    Source/ui/FxRackPanel.cpp)
+    Source/ui/FxRackPanel.cpp
+    Source/ui/ModPanel.cpp)
 target_sources(Ferrum8 PRIVATE ${FERRUM_SOURCES})
 
 target_compile_definitions(Ferrum8 PUBLIC

@@ -252,7 +252,7 @@ class Utility : public Module
 {
 public:
     enum { kGain, kPan, kWidth, kLowCut, kHighCut, kMonoBelow, kPolarity };
-    void prepare (double s) override { sr = s; cache.first = true; reset(); gainS.setTime (sr, 10); gainS.snap (1.f); }
+    void prepare (double s) override { sr = s; cache.first = true; primed = false; reset(); gainS.setTime (sr, 10); gainS.snap (1.f); }
     void reset() override { for (auto& b : lo) b.reset(); for (auto& b : hi) b.reset(); for (auto& b : mono) b.reset(); }
     void process (float* L, float* R, int n, const float* p) override
     {
@@ -270,6 +270,7 @@ public:
             const int pol = idx (T, p, kPolarity);
             polL = (pol == 1 || pol == 3) ? -1.f : 1.f;
             polR = (pol == 2 || pol == 3) ? -1.f : 1.f;
+            if (! primed) { gainS.snap (gainS.target); primed = true; } // a new Utility starts at its gain, no fade
         }
         for (int i = 0; i < n; ++i)
         {
@@ -291,6 +292,7 @@ public:
 private:
     ParamCache cache;
     Smooth gainS;
+    bool primed = false;
     Biquad lo[2], hi[2], mono[2];
     bool loOn = false, hiOn = false, monoOn = false;
     float panL = 1, panR = 1, width = 1, polL = 1, polR = 1;

@@ -87,6 +87,26 @@ public:
     static juce::File presetFolder() { return userFolder().getChildFile ("Presets"); }
     static juce::File patchFolder() { return userFolder().getChildFile ("Patches"); }
 
+    // Sound mutation: every N pattern loops a channel's sound moves a little (each channel has its own
+    // rate, depth and mode). Orbit: each mutation starts again from the channel's home sound, so it
+    // wanders around it. Drift: each mutation starts from the last one, so the sound travels.
+    struct SoundMutation { int every = 0; float depth = 0.3f; int mode = 0; };   // every: loops, 0 = off
+    static constexpr int kMutateEvery[6] = { 0, 1, 2, 4, 8, 16 };
+    SoundMutation getSoundMutation (int ch) const { return soundMut[(size_t) ch]; }
+    void setSoundMutation (int ch, const SoundMutation& m);
+    void mutateSoundNow (int ch);          // one mutation step right away
+    void keepMutationHome (int ch);        // the current sound becomes the home Orbit returns to
+    void restoreMutationHome (int ch);     // back to the home sound
+    uint32_t mutationCount (int ch) const { return mutCount[(size_t) ch]; }
+
+    // Modulation (MOD tab): six modulators with routes to channel and FX parameters. Edit a copy and
+    // hand it back with setMods(); call pushUndo() first for undoable edits.
+    const std::array<ferrum::mod::ModState, ferrum::mod::kMods>& getMods() const { return modStates; }
+    void setMods (const std::array<ferrum::mod::ModState, ferrum::mod::kMods>& m, bool markDirty = true);
+    int addModRoute (int modulator, const ferrum::mod::Route& r);   // returns the route slot or -1 when full
+    float modDepthOn (const ferrum::mod::Route& target) const;     // summed depth of every route to a target
+    float modValue (int m) const { return engine.mods.uiValue[(size_t) m].load(); }
+
     // FX rack (edited from the FX tab; call pushUndo() before a change, rackChanged() after it)
     ferrum::fx::FxRack& getRack() { return engine.rack; }
     void rackChanged() { presetDirty = true; sendUiChange(); }
@@ -161,12 +181,21 @@ private:
     std::atomic<float>* pPlay = nullptr, *pPattern = nullptr, *pRate = nullptr, *pSwing = nullptr, *pFill = nullptr,
                       *pMaster = nullptr, *pTempo = nullptr, *pMorph = nullptr;
     std::array<std::atomic<float>*, NC> pMute {};
+    std::array<std::atomic<float>*, ferrum::mod::kMods> pMacro {};
+    std::array<ferrum::mod::ModState, ferrum::mod::kMods> modStates {};
 
     std::atomic<int> midiLaunch { 0 }, midiPitched { 0 }, midiNoteOff { 0 }, midiTransmit { 1 }, midiBend { 12 };
 
     std::vector<juce::String> undoStack, redoStack;
     void recordRoll (const juce::String& label);
     void evolveTick();
+    void soundMutationTick (int loops);
+    std::array<SoundMutation, NC> soundMut {};
+    std::array<ferrum::Patch, NC> mutHome {};
+    std::array<bool, NC> mutHomeSet {};
+    std::array<int, NC> mutLoops {};
+    std::array<uint32_t, NC> mutCount {};
+    bool mutating = false;
     std::vector<Roll> rollHistory;
     std::array<std::optional<ferrum::PatternData>, ferrum::kNumPatterns> evolveHome;
     uint32_t lastPatternStarts = 0;

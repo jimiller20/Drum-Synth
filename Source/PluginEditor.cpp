@@ -7,15 +7,19 @@ using namespace juce;
 using namespace ferrum;
 
 Ferrum8Editor::Ferrum8Editor (Ferrum8Processor& p)
-    : AudioProcessorEditor (&p), proc (p), toolbar (p), channels (p), patch (p), pattern (p), global (p), fxPanel (p)
+    : AudioProcessorEditor (&p), proc (p), toolbar (p), channels (p), patch (p), pattern (p), global (p), fxPanel (p), modPanel (p)
 {
     setLookAndFeel (&lnf);
     LookAndFeel::setDefaultLookAndFeel (&lnf);
     addAndMakeVisible (content);
     content.onPaint = [this] (Graphics& g) { drawTabs (g); drawStatus (g); };
-    for (auto* c : std::initializer_list<Component*> { &toolbar, &channels, &patch, &pattern, &global, &drumsTab, &fxTab })
+    for (auto* c : std::initializer_list<Component*> { &toolbar, &channels, &patch, &pattern, &global, &drumsTab, &fxTab, &modTab })
         content.addAndMakeVisible (c);
     content.addChildComponent (fxPanel);
+    content.addChildComponent (modPanel);
+    modTab.setTooltip ("Modulation: LFOs, envelopes, sample and hold, peak controllers, random drift, step lanes and macros (Tab switches)");
+    modTab.onClick = [this] { setTab (2); };
+    modPanel.showStatus = [this] (const String& s) { status (s); };
     drumsTab.setTooltip ("Drum patches and patterns (Tab switches)");
     fxTab.setTooltip ("The FX rack: FX 1, FX 2 and Master buses, lanes in parallel, slots in series (Tab switches)");
     drumsTab.onClick = [this] { setTab (0); };
@@ -83,9 +87,11 @@ void Ferrum8Editor::resized()
     tabArea = { 0, 114, kDesignW, 34 };
     drumsTab.setBounds (12, 118, 118, 26);
     fxTab.setBounds (134, 118, 118, 26);
+    modTab.setBounds (256, 118, 118, 26);
     patch.setBounds (0, 148, kDesignW, 354);
     pattern.setBounds (0, 502, kDesignW, 236);
     fxPanel.setBounds (0, 148, kDesignW, 590);
+    modPanel.setBounds (0, 148, kDesignW, 590);
     global.setBounds (0, 738, kDesignW, 112);
     statusArea = { 0, 850, kDesignW, 32 };
     content.repaint();
@@ -97,7 +103,9 @@ void Ferrum8Editor::timerCallback()
     channels.tick();
     pattern.tick();
     global.tick();
+    patch.tick();
     if (tab == 1) fxPanel.tick();
+    if (tab == 2) modPanel.tick();
     if (statusTimer > 0 && --statusTimer == 0) statusText.clear();
     static int frame = 0;
     if ((++frame % 10) == 0) content.repaint (statusArea);
@@ -110,6 +118,7 @@ void Ferrum8Editor::changeListenerCallback (ChangeBroadcaster*)
     channels.repaint();
     pattern.repaint();
     fxPanel.refresh();
+    modPanel.refresh();
     global.repaint();
     content.repaint (tabArea);
     if (patch.getChannel() != proc.editorChannel) selectChannel (proc.editorChannel);
@@ -131,13 +140,16 @@ void Ferrum8Editor::preview (int ch, bool accent)
 
 void Ferrum8Editor::setTab (int t)
 {
-    tab = jlimit (0, 1, t);
+    tab = jlimit (0, 2, t);
     patch.setVisible (tab == 0);
     pattern.setVisible (tab == 0);
     fxPanel.setVisible (tab == 1);
+    modPanel.setVisible (tab == 2);
     if (tab == 1) fxPanel.refresh();
+    if (tab == 2) modPanel.refresh();
     drumsTab.setToggleState (tab == 0, dontSendNotification);
     fxTab.setToggleState (tab == 1, dontSendNotification);
+    modTab.setToggleState (tab == 2, dontSendNotification);
     content.repaint (tabArea);
 }
 
@@ -170,7 +182,7 @@ void Ferrum8Editor::drawTabs (Graphics& g)
     g.setFont (ui::font (14.f));
     g.setColour (ui::col::dim);
     g.drawFittedText (text.isEmpty() ? String ("No effects: set a channel's Output to FX 1 or FX 2, or open the FX RACK tab") : text,
-                      tabArea.withTrimmedLeft (270).withTrimmedRight (14), Justification::centredRight, 1, 0.8f);
+                      tabArea.withTrimmedLeft (390).withTrimmedRight (14), Justification::centredRight, 1, 0.8f);
 }
 
 void Ferrum8Editor::drawStatus (Graphics& g)
@@ -594,7 +606,7 @@ bool Ferrum8Editor::keyPressed (const KeyPress& k)
         }
     }
     if (cmd && mods.isShiftDown() && code == 'Z') { proc.redo(); return true; }
-    if (k == KeyPress::tabKey) { setTab (tab == 0 ? 1 : 0); return true; }
+    if (k == KeyPress::tabKey) { setTab ((tab + 1) % 3); return true; }
     if (code >= '1' && code <= '8')
     {
         const int ch = code - '1';

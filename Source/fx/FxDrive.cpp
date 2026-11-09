@@ -52,8 +52,8 @@ struct Svf
 
 //=============================================================================================
 // Ferric. Six preamp characters (each a pre-EQ, a transfer curve, a post-EQ and its own dynamics),
-// an optional resonant highpass or bandpass in the main path, a feedback loop that sends the output
-// back into the preamp (so the filter sits inside the loop), and a tilt EQ at the very end.
+// an optional resonant highpass or bandpass after the preamp, an analog-style feedback loop around the
+// preamp (see loopStage), and a tilt EQ at the very end.
 class Ferric : public Module
 {
 public:
@@ -61,7 +61,11 @@ public:
     void prepare (double s) override
     {
         sr = s;
-        for (auto& c : ch) { c.loop.setMax ((int) (sr * 0.01)); c.dry.set (Oversampler2x::kLatency); c.dc.set (sr, 12.0); c.loopDc.set (sr, 20.0); }
+        for (auto& c : ch) { c.dry.set (Oversampler2x::kLatency); c.dc.set (sr, 12.0); }
+        // feedback loop filters run at the oversampled rate: a coupling high-pass and a band limit
+        const double osr = 2.0 * sr;
+        loopHpA = (float) std::exp (-2.0 * 3.14159265358979 * 70.0 / osr);
+        loopLpA = (float) (1.0 - std::exp (-2.0 * 3.14159265358979 * 4200.0 / osr));
         cache.first = true;
         reset();
     }
@@ -69,7 +73,8 @@ public:
     {
         for (auto& c : ch)
         {
-            c.os.reset(); c.loop.reset(); c.dry.reset(); c.dc.reset(); c.loopDc.reset(); c.svf.reset();
+            c.os.reset(); c.dry.reset(); c.dc.reset(); c.svf.reset();
+            c.fbState = c.fbHpX = c.fbHpY = c.fbLp = 0.f;
             c.pre1.reset(); c.pre2.reset(); c.post1.reset(); c.post2.reset(); c.env.reset(); c.slow.reset();
             c.slew = 0; c.tilt.split.reset();
         }
@@ -87,7 +92,6 @@ public:
                 const float in = x[i];
                 const float dry = s.dry.process (in);
                 float u = s.pre2.process (s.pre1.process (in));
-                u += feedback * s.loopDc.process (s.loop.read (loopDelay));
                 // preamp dynamics
                 const float e = s.env.process (u), slowE = s.slow.process (u);
                 float g = drive;
@@ -96,7 +100,8 @@ public:
                 u *= g;
                 float a, b;
                 s.os.upsample (u, a, b);
-                a = curve (a, s); b = curve (b, s);
+                if (loopGain > 0.f) { a = loopStage (a, s); b = loopStage (b, s); }
+                else { a = curve (a, s); b = curve (b, s); }
                 float v = s.os.downsample (a, b);
                 v = s.post2.process (s.post1.process (v));
                 if (filterMode > 0)
@@ -105,8 +110,7 @@ public:
                     s.svf.tick (v, lp, bp, hp, filterMode == 2);
                     v = filterMode == 1 ? hp : bp * bpGain;
                 }
-                v *= makeup;
-                s.loop.push (flush (softClip (v * 1.2f) / 1.2f));
+                v *= makeup * fbMakeup;
                 const float out = s.dc.process (s.tilt.process (v));
                 x[i] = dry + (out - dry) * mixAmt;
             }
@@ -117,15 +121,34 @@ private:
     struct Chan
     {
         Oversampler2x os;
-        DelayLine loop;
         LatencyDelay dry;
-        DcBlocker dc, loopDc;
+        DcBlocker dc;
+        float fbState = 0, fbHpX = 0, fbHpY = 0, fbLp = 0; // the analog-style feedback loop
         Svf svf;
         Biquad pre1, pre2, post1, post2;
         Envelope env, slow;
         Tilt tilt;
         float slew = 0;
     };
+    // Analog-style feedback: the preamp's output is fed back to its own input with (almost) no delay -
+    // one sample at the oversampled rate, like a feedback resistor around a gain stage. The loop runs
+    // through a coupling high-pass (70 Hz) and a band limit (4.2 kHz), and the returned signal is soft-
+    // limited the way an op-amp's rails would. Its gain is normalised by the preamp curve's small-signal
+    // slope, so the loop gain stays below 1 at every frequency: feedback thickens and sustains the drive
+    // (more gain at low levels, hysteresis, compression as the curve saturates) instead of ringing or
+    // howling at a comb frequency. The user filter sits outside the loop, so feedback never pumps its
+    // resonance.
+    float loopStage (float x, Chan& s) const
+    {
+        const float y = curve (x + loopGain * s.fbState, s);
+        // coupling high-pass (one pole) then band limit (one pole)
+        const float hp = loopHpA * (s.fbHpY + y - s.fbHpX);
+        s.fbHpX = y;
+        s.fbHpY = flush (hp);
+        s.fbLp = flush (s.fbLp + loopLpA * (hp - s.fbLp));
+        s.fbState = tanhFast (s.fbLp * 1.25f) * 0.8f;
+        return y;
+    }
     float curve (float x, Chan& s) const
     {
         switch (preamp)
@@ -164,8 +187,11 @@ private:
         drive = dbToGain (driveDb) * gainScale[preamp];
         makeup = 1.f / (1.f + 0.32f * std::log2 (std::max (1.f, drive)));
         if (preamp == 3) makeup *= 1.1f;
-        feedback = 1.3f * std::pow (p[kFeedback], 1.5f);
-        loopDelay = (float) (sr * 0.0007);
+        // loop gain: up to 0.9 at 100 %, divided by the curve's slope around zero (Lab's two stages are steep)
+        static const float slope0[6] = { 1.0f, 3.5f, 3.1f, 1.0f, 1.0f, 1.6f };
+        const float fb = p[kFeedback];
+        loopGain = 0.9f * std::pow (fb, 0.85f) / slope0[preamp];
+        fbMakeup = 1.f / (1.f + 0.45f * fb);  // positive feedback adds gain: keep the level close
         mixAmt = p[kMix];
         const double fc = val (T, p, kCutoff);
         const float res = p[kReso];
@@ -190,7 +216,7 @@ private:
     std::array<Chan, 2> ch;
     ParamCache cache;
     int preamp = 0, filterMode = 0;
-    float drive = 1, makeup = 1, feedback = 0, loopDelay = 30, mixAmt = 1, bpGain = 1;
+    float drive = 1, makeup = 1, loopGain = 0, fbMakeup = 1, loopHpA = 0.99f, loopLpA = 0.3f, mixAmt = 1, bpGain = 1;
 };
 
 //=============================================================================================

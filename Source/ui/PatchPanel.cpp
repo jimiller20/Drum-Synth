@@ -41,6 +41,10 @@ PatchPanel::PatchPanel (Ferrum8Processor& p) : proc (p)
     flavorBtn.onClick = [this] { showRandomMenu(); };
     alterBtn.setTooltip ("Alter: small random changes to this patch");
     editAllBtn.setTooltip ("Edit All: knob moves apply to every unmuted channel");
+    addAndMakeVisible (mutateBtn);
+    mutateBtn.setTooltip ("Sound mutation for this channel: every few loops its sound moves a little (pitch, decay, tone, filter, "
+                          "noise, transient, drive). Each channel has its own rate and depth, so the kick can mutate while the rest stays.");
+    mutateBtn.onClick = [this] { showMutatePanel(); };
     editAllBtn.setClickingTogglesState (true);
     editAllBtn.onClick = [this] { editAll = editAllBtn.getToggleState(); repaint(); };
 
@@ -96,13 +100,48 @@ void PatchPanel::buildControls()
             k->setBipolar (p == P_PAN || p == P_OSC_FINE || p == P_PITCH_SLOPE || p == P_SLOPE);
             k->onGestureStart = [this] { proc.pushUndo(); };
             k->onUserDelta = [this, p] (float delta) { if (editAll) applyEditAll (p, delta); };
+            // right-click > Modulate with > MOD n: a route from that modulator to this parameter
+            k->extendMenu = [this, p] (PopupMenu& m)
+            {
+                PopupMenu sub;
+                const auto& ms = proc.getMods();
+                for (int i = 0; i < mod::kMods; ++i)
+                    sub.addItem (1000 + i, "MOD " + String (i + 1) + "  (" + (ms[(size_t) i].type == mod::Type::Off ? String ("off - becomes an LFO") : String (mod::kTypeNames[(int) ms[(size_t) i].type])) + ")");
+                m.addSeparator();
+                m.addSubMenu ("Modulate with", sub);
+                mod::Route r; r.kind = mod::Route::Channel; r.ch = channel; r.param = p;
+                if (proc.modDepthOn (r) != 0.f) m.addItem (1100, "Remove modulation");
+            };
+            k->onExtendedMenu = [this, p] (int id)
+            {
+                mod::Route r; r.kind = mod::Route::Channel; r.ch = channel; r.param = p;
+                proc.pushUndo();
+                if (id == 1100)
+                {
+                    auto ms = proc.getMods();
+                    for (auto& s : ms)
+                        for (auto& rt : s.routes) if (rt.kind != mod::Route::None && rt.sameTarget (r)) rt = {};
+                    proc.setMods (ms);
+                    if (showStatus) showStatus (String (paramDef (p).name) + ": modulation removed");
+                }
+                else
+                {
+                    r.depth = 0.3f;
+                    const int m = id - 1000;
+                    if (proc.addModRoute (m, r) < 0) { if (showStatus) showStatus ("MOD " + String (m + 1) + " already has 8 targets"); return; }
+                    if (showStatus) showStatus ("MOD " + String (m + 1) + " now moves " + paramDef (p).name + " on channel " + String (channel + 1)
+                                                + " (30%). Set its shape and depth on the MOD tab.");
+                }
+                proc.sendUiChange();
+            };
             controls[(size_t) p] = std::move (k);
         }
         String tip (d.name);
         if (p == P_GHOST) tip = "Ghost Depth: how much softer, darker and rounder the GHOST lane levels 1-3 play (50% = normal, 0% = off)";
         if (p == P_HUMANIZE) tip = "Humanize: timing and dynamics that wander from hit to hit like a real player";
         if (p == P_VARIANCE) tip = "Variance: random per-hit changes to decay, pitch, tone, filter and transient (happy accidents)";
-        if (p == P_OUTPUT) tip = "Output: plugin output A or B, or through the FX 1 / FX 2 bus of the FX rack (FX tab)";
+        if (p == P_OUTPUT) tip = "Output: plugin output A (main) or B, through the FX 1 / FX 2 bus of the FX rack, or Own: the channel's own "
+                                 "plugin output (Ch 1 - Ch 8) so it can go to its own mixer track for sidechain or separate processing";
         if (auto* tc = dynamic_cast<SettableTooltipClient*> (controls[(size_t) p].get())) tc->setTooltip (tip);
         addAndMakeVisible (*controls[(size_t) p]);
     }
@@ -161,6 +200,13 @@ void PatchPanel::setChannel (int ch)
 
 void PatchPanel::refresh()
 {
+    updateMutateButton();
+    for (int p = 0; p < NUM_PATCH_PARAMS; ++p) // modulation ranges on the knobs
+        if (auto* k = dynamic_cast<Knob*> (controls[(size_t) p].get()))
+        {
+            mod::Route r; r.kind = mod::Route::Channel; r.ch = channel; r.param = p;
+            k->setModRange (proc.modDepthOn (r));
+        }
     const Model m = (Model) choiceIndex (proc.getPatchValue (channel, P_MODEL), 4);
     for (int p = 0; p < NUM_PATCH_PARAMS; ++p)
     {
@@ -201,10 +247,11 @@ void PatchPanel::resized()
     h.removeFromLeft (6);
     openBtn.setBounds (h.removeFromLeft (30)); h.removeFromLeft (4);
     saveBtn.setBounds (h.removeFromLeft (30)); h.removeFromLeft (24);
-    modelSel.setBounds (h.removeFromLeft (330)); h.removeFromLeft (24);
+    modelSel.setBounds (h.removeFromLeft (270)); h.removeFromLeft (14);
     diceBtn.setBounds (h.removeFromLeft (96)); h.removeFromLeft (1);
     flavorBtn.setBounds (h.removeFromLeft (24)); h.removeFromLeft (6);
     alterBtn.setBounds (h.removeFromLeft (84)); h.removeFromLeft (6);
+    mutateBtn.setBounds (h.removeFromLeft (142));
     editAllBtn.setBounds (h.removeFromRight (90));
     layoutGroups();
 }
@@ -548,4 +595,105 @@ void PatchPanel::showPatchList()
         else if (r >= 1000) { proc.loadPatch (channel, files[r - 1000]); refresh(); }
     });
 }
+
+//==============================================================================================
+// Sound mutation settings for one channel, in a call-out bubble
+namespace
+{
+class MutatePanel : public Component
+{
+public:
+    MutatePanel (Ferrum8Processor& p, int ch, std::function<void (const String&)> status, std::function<void()> changed)
+        : proc (p), channel (ch), showStatus (std::move (status)), onChanged (std::move (changed))
+    {
+        for (auto* c : std::initializer_list<Component*> { &every, &depth, &mode, &nowBtn, &keepBtn, &homeBtn }) addAndMakeVisible (c);
+        const auto m = proc.getSoundMutation (channel);
+        int idx = 0;
+        for (int i = 0; i < 6; ++i) if (Ferrum8Processor::kMutateEvery[i] == m.every) idx = i;
+        every.setLabel ("EVERY  (pattern loops)");
+        every.bindFree ({ "Off", "1", "2", "4", "8", "16" }, idx);
+        every.setAccent (col::accent);
+        every.onUserChoice = [this] (int i) { auto s = proc.getSoundMutation (channel); s.every = Ferrum8Processor::kMutateEvery[i]; apply (s); };
+        mode.setLabel ("MODE");
+        mode.bindFree ({ "Orbit", "Drift" }, m.mode);
+        mode.onUserChoice = [this] (int i) { auto s = proc.getSoundMutation (channel); s.mode = i; apply (s); };
+        mode.setTooltip ("Orbit: every mutation starts from the home sound, so it wanders around it.\nDrift: every mutation starts from the last one, so the sound travels.");
+        depth.setLabel ("Depth");
+        depth.setAccent (col::accent);
+        depth.bindFree ({ "Depth", 0.3f, [this] { return proc.getSoundMutation (channel).depth; },
+                          [this] (float v) { auto s = proc.getSoundMutation (channel); s.depth = v; apply (s); },
+                          [] (float v) { return String (roundToInt (v * 100.f)) + "%"; },
+                          [] (const String& t, float& n) { n = jlimit (0.f, 1.f, t.getFloatValue() / 100.f); return true; } });
+        depth.setTooltip ("How far each mutation moves the sound (pitch up to 2 semitones, decay, tone, filter, noise, FM depth, transient, drive)");
+        nowBtn.onClick = [this] { proc.pushUndo(); proc.mutateSoundNow (channel); if (showStatus) showStatus ("Mutated channel " + String (channel + 1)); };
+        keepBtn.onClick = [this] { proc.keepMutationHome (channel); if (showStatus) showStatus ("Channel " + String (channel + 1) + ": this sound is now the home Orbit returns to"); };
+        homeBtn.onClick = [this] { proc.restoreMutationHome (channel); if (showStatus) showStatus ("Channel " + String (channel + 1) + " back to its home sound"); };
+        nowBtn.setTooltip ("One mutation step now (Ctrl+Z undoes it)");
+        keepBtn.setTooltip ("Make the current sound the home sound (Orbit mutates around it)");
+        homeBtn.setTooltip ("Go back to the home sound");
+        setSize (360, 250);
+    }
+    void paint (Graphics& g) override
+    {
+        g.fillAll (col::panel);
+        g.setColour (col::text);
+        g.setFont (font (16.f, true));
+        g.drawText ("SOUND MUTATION  -  CHANNEL " + String (channel + 1), 14, 8, getWidth() - 28, 20, Justification::centredLeft);
+        g.setColour (col::dim);
+        g.setFont (font (13.f));
+        g.drawFittedText ("While the pattern plays, this channel's sound moves a little every few loops. "
+                          "Other channels keep their own setting. Changes go to the morph end the slider is nearest to.",
+                          Rectangle<int> (14, 196, getWidth() - 28, 48), Justification::topLeft, 3);
+    }
+    void resized() override
+    {
+        every.setBounds (14, 34, getWidth() - 28, 50);
+        mode.setBounds (14, 94, 150, 50);
+        depth.setBounds (176, 88, 64, 72);
+        nowBtn.setBounds (252, 92, 94, 26);
+        keepBtn.setBounds (252, 122, 94, 26);
+        homeBtn.setBounds (252, 152, 94, 26);
+    }
+
+private:
+    void apply (const Ferrum8Processor::SoundMutation& s)
+    {
+        proc.setSoundMutation (channel, s);
+        if (onChanged) onChanged();
+    }
+    Ferrum8Processor& proc;
+    int channel;
+    std::function<void (const String&)> showStatus;
+    std::function<void()> onChanged;
+    Segmented every, mode;
+    Knob depth;
+    IconButton nowBtn { IconButton::Icon::Dice, "Now" }, keepBtn { IconButton::Icon::None, "Keep" }, homeBtn { IconButton::Icon::None, "Home" };
+};
+} // namespace
+
+void PatchPanel::showMutatePanel()
+{
+    auto panel = std::make_unique<MutatePanel> (proc, channel, showStatus, [this] { updateMutateButton(); });
+    auto area = mutateBtn.getScreenBounds();
+    if (auto* top = getTopLevelComponent()) area = top->getLocalArea (nullptr, area);
+    CallOutBox::launchAsynchronously (std::move (panel), area, getTopLevelComponent());
+}
+
+void PatchPanel::updateMutateButton()
+{
+    const auto m = proc.getSoundMutation (channel);
+    mutateBtn.setButtonText (m.every == 0 ? String ("Mutate: Off")
+                                    : "Mutate: " + String (m.every) + (m.every == 1 ? " loop" : " loops") + "  " + String (roundToInt (m.depth * 100.f)) + "%");
+    mutateBtn.setToggleState (m.every > 0, dontSendNotification);
+    lastMutCount = proc.mutationCount (channel);
+    repaint();
+}
+
+void PatchPanel::tick()
+{
+    const uint32_t c = proc.mutationCount (channel);
+    if (c != lastMutCount) { lastMutCount = c; mutateBtn.setBlink (true); blinkFrames = 6; }
+    else if (blinkFrames > 0 && --blinkFrames == 0) mutateBtn.setBlink (false);
+}
+
 } // namespace ui

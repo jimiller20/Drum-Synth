@@ -5,6 +5,7 @@
 #include "../dsp/LxrVoice.h"
 #include "../dsp/FxBus.h"
 #include "../fx/FxRack.h"
+#include "Modulation.h"
 #include "Patterns.h"
 #include "Groove.h"
 #include <atomic>
@@ -61,9 +62,24 @@ public:
     void setGlobals (const Globals& g);
     void setMidiConfig (const MidiConfig& c) { midiCfg = c; }
 
-    // outA must be valid; outB may be null (then B is mixed into A)
+    // Output buffers. A must be valid; any other pair may be null (inactive in the host): what would
+    // go there is mixed into A instead. chL/chR are the channels' own outputs ("Own"), fxL/fxR the
+    // FX buses' own outputs.
+    struct Outputs
+    {
+        float* aL = nullptr; float* aR = nullptr;
+        float* bL = nullptr; float* bR = nullptr;
+        std::array<float*, kNumChannels> chL {}, chR {};
+        std::array<float*, 2> fxL {}, fxR {};
+    };
+    void process (const Outputs& out, int n, const Transport& t, const std::vector<MidiIn>& midiIn, std::vector<MidiOut>* midiOut);
+    // A and B only (tests, offline rendering)
     void process (float* aL, float* aR, float* bL, float* bR, int n, const Transport& t,
-                  const std::vector<MidiIn>& midiIn, std::vector<MidiOut>* midiOut);
+                  const std::vector<MidiIn>& midiIn, std::vector<MidiOut>* midiOut)
+    {
+        Outputs o; o.aL = aL; o.aR = aR; o.bL = bL; o.bR = bR;
+        process (o, n, t, midiIn, midiOut);
+    }
 
     // thread-safe calls from the UI
     void previewTrigger (int ch, float velocity);
@@ -72,6 +88,7 @@ public:
 
     PatternBank patterns;
     fx::FxRack rack;            // FX 1, FX 2 and Master buses (edit from the message thread)
+    mod::Matrix mods;           // modulators and their routes (setState from the message thread)
 
     // state published for the UI
     std::atomic<int> uiPlayingPattern { 0 }, uiStep { -1 }, uiState { 0 }, uiSelectedPattern { 0 };
@@ -133,6 +150,13 @@ private:
     struct Preview { int ch; float vel; };
     std::array<Preview, 64> previewFifo {};
     std::atomic<int> previewWrite { 0 }, previewRead { 0 };
+
+    // modulation
+    std::array<float, kNumChannels> chLevel {};                          // peak of each channel in the last control block
+    float mainLevel = 0.f;                                              // peak of output A in the last audio block
+    std::array<std::array<float, NUM_PATCH_PARAMS>, kNumChannels> modApplied {};
+    bool modWasOn = false;
+    std::vector<std::array<float, mod::kMods>> modVals;                 // modulator outputs per control block (FX routes)
 
     // scratch
     std::vector<float> mono, busL[2], busR[2];

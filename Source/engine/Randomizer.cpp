@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "Randomizer.h"
 #include "../dsp/LxrCore.h"
+#include "../dsp/LxrVoice.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -299,63 +300,63 @@ Patch Randomizer::cymbal (CymbalType t, const Patch& current, Genre g)
     using namespace lxr;
     b.ch (P_MODEL, (int) Model::Cymbal);
     b.ch (P_FM_MODE, 0);
-    b.set (P_ATTACK, 0);
+    b.rnd (P_ATTACK, 0, 2);                       // a hair of attack takes the click off the strike
     b.rnd (P_OSC_FINE, 44, 84);
     b.set (P_PITCH_AMT, 0);
     b.ch (P_TRANS_WAVE, 0); b.set (P_TRANS_VOL, 0);
     const auto rel = [&] (int id, float carrier, float lo, float hi) { b.set (id, std::clamp (carrier + uni (lo, hi), 0.f, 127.f)); };
     float c = 0;
+    // Decay times (to -40 dB): crash 1.3-2 s, ride 1-1.6 s, splash 0.6-1 s, china 1-1.5 s,
+    // 808 0.8-1.3 s, bell 0.5-0.9 s. The envelope's slope stays above 20 (an exponential tail).
     switch (t)
     {
-        case CymbalType::Crash: // square carrier, square modulator at ~1.4-1.6x, noise wash, bright and long
-            b.ch (P_OSC_WAVE, WAVE_REC); c = uni (74, 88); b.set (P_OSC_COARSE, c);
-            b.ch (P_MOD_WAVE, chance (0.7f) ? WAVE_REC : WAVE_SAW); rel (P_MOD_COARSE, c, 5.6f, 8.4f); b.norm (P_MOD_GAIN, 0.55f, 0.9f);
-            b.ch (P_MOD2_WAVE, WAVE_NOISE); b.rnd (P_MOD2_COARSE, 110, 127); b.norm (P_MOD2_GAIN, 0.2f, 0.5f);
-            b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 70, 90); b.rnd (P_FILTER_RESO, 0, 25);
-            b.rnd (P_DECAY, 78, 90); b.rnd (P_SLOPE, 10, 35);
-            if (chance (0.3f)) { b.ch (P_TRANS_WAVE, 8); b.norm (P_TRANS_VOL, 0.1f, 0.3f); b.rnd (P_TRANS_FREQ, 25, 45); }
+        case CymbalType::Crash: // triangle / square carrier, triangle modulator at ~1.4-1.6x, noise wash
+            b.ch (P_OSC_WAVE, chance (0.6f) ? WAVE_TRI : WAVE_REC); c = uni (74, 86); b.set (P_OSC_COARSE, c);
+            b.ch (P_MOD_WAVE, WAVE_TRI); rel (P_MOD_COARSE, c, 5.6f, 8.4f); b.norm (P_MOD_GAIN, 0.34f, 0.5f);
+            b.ch (P_MOD2_WAVE, WAVE_NOISE); b.rnd (P_MOD2_COARSE, 110, 127); b.norm (P_MOD2_GAIN, 0.2f, 0.45f);
+            b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 72, 84); b.rnd (P_FILTER_RESO, 0, 15);
+            b.rnd (P_DECAY, 62, 74); b.rnd (P_SLOPE, 22, 40);
             break;
-        case CymbalType::Ride: // triangle carrier, square modulator at a moderate index: a ping over a quiet wash
-            b.ch (P_OSC_WAVE, WAVE_TRI); c = uni (80, 90); b.set (P_OSC_COARSE, c);
-            b.ch (P_MOD_WAVE, WAVE_REC); rel (P_MOD_COARSE, c, 10.4f, 13.6f); b.norm (P_MOD_GAIN, 0.4f, 0.65f);
-            b.ch (P_MOD2_WAVE, WAVE_NOISE); b.rnd (P_MOD2_COARSE, 105, 127); b.norm (P_MOD2_GAIN, 0.2f, 0.4f);
-            b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 72, 88); b.rnd (P_FILTER_RESO, 5, 25);
-            b.rnd (P_DECAY, 80, 94); b.rnd (P_SLOPE, 30, 60);
+        case CymbalType::Ride: // triangle carrier, sine modulator at a moderate index: a ping over a quiet wash
+            b.ch (P_OSC_WAVE, WAVE_TRI); c = uni (72, 82); b.set (P_OSC_COARSE, c);
+            b.ch (P_MOD_WAVE, chance (0.5f) ? WAVE_SINE : WAVE_TRI); rel (P_MOD_COARSE, c, 10.4f, 13.6f); b.norm (P_MOD_GAIN, 0.3f, 0.45f);
+            b.ch (P_MOD2_WAVE, WAVE_NOISE); b.rnd (P_MOD2_COARSE, 105, 127); b.norm (P_MOD2_GAIN, 0.15f, 0.32f);
+            b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 70, 82); b.rnd (P_FILTER_RESO, 0, 15);
+            b.rnd (P_DECAY, 56, 68); b.rnd (P_SLOPE, 25, 45);
             break;
         case CymbalType::Splash: // a small, bright, short crash
-            b.ch (P_OSC_WAVE, WAVE_REC); c = uni (82, 96); b.set (P_OSC_COARSE, c);
-            b.ch (P_MOD_WAVE, WAVE_REC); rel (P_MOD_COARSE, c, 5.6f, 8.4f); b.norm (P_MOD_GAIN, 0.5f, 0.85f);
-            b.ch (P_MOD2_WAVE, WAVE_NOISE); b.rnd (P_MOD2_COARSE, 110, 127); b.norm (P_MOD2_GAIN, 0.25f, 0.55f);
-            b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 82, 98); b.rnd (P_FILTER_RESO, 0, 20);
-            b.rnd (P_DECAY, 62, 78); b.rnd (P_SLOPE, 5, 25);
+            b.ch (P_OSC_WAVE, WAVE_TRI); c = uni (76, 88); b.set (P_OSC_COARSE, c);
+            b.ch (P_MOD_WAVE, WAVE_TRI); rel (P_MOD_COARSE, c, 5.6f, 8.4f); b.norm (P_MOD_GAIN, 0.3f, 0.42f);
+            b.ch (P_MOD2_WAVE, WAVE_NOISE); b.rnd (P_MOD2_COARSE, 110, 127); b.norm (P_MOD2_GAIN, 0.25f, 0.5f);
+            b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 74, 86); b.rnd (P_FILTER_RESO, 0, 15);
+            b.rnd (P_DECAY, 42, 52); b.rnd (P_SLOPE, 22, 35);
             break;
-        case CymbalType::China: // trashy: saw carrier, hot square and saw modulators, resonant bandpass, drive
-            b.ch (P_OSC_WAVE, WAVE_SAW); c = uni (76, 86); b.set (P_OSC_COARSE, c);
-            b.ch (P_MOD_WAVE, WAVE_REC); rel (P_MOD_COARSE, c, 4.5f, 7.5f); b.norm (P_MOD_GAIN, 0.8f, 1.0f);
-            b.ch (P_MOD2_WAVE, WAVE_SAW); rel (P_MOD2_COARSE, c, 16.f, 21.f); b.norm (P_MOD2_GAIN, 0.55f, 0.85f);
-            b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 64, 76); b.rnd (P_FILTER_RESO, 25, 45);
-            b.rnd (P_DECAY, 74, 88); b.rnd (P_SLOPE, 15, 35);
+        case CymbalType::China: // trashy: saw carrier, square and saw modulators, resonant high-pass, a little drive
+            b.ch (P_OSC_WAVE, WAVE_SAW); c = uni (74, 84); b.set (P_OSC_COARSE, c);
+            b.ch (P_MOD_WAVE, WAVE_REC); rel (P_MOD_COARSE, c, 4.5f, 7.5f); b.norm (P_MOD_GAIN, 0.7f, 0.95f);
+            b.ch (P_MOD2_WAVE, WAVE_SAW); rel (P_MOD2_COARSE, c, 16.f, 21.f); b.norm (P_MOD2_GAIN, 0.45f, 0.75f);
+            b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 64, 76); b.rnd (P_FILTER_RESO, 15, 35);
+            b.rnd (P_DECAY, 56, 66); b.rnd (P_SLOPE, 22, 35);
             break;
-        case CymbalType::Cymbal808: // the TR-808 recipe: a cluster of square waves at fixed odd ratios, high-passed
+        case CymbalType::Cymbal808: // the TR-808 recipe: square waves at fixed odd ratios, high-passed
             b.ch (P_OSC_WAVE, WAVE_REC); c = uni (55, 60); b.set (P_OSC_COARSE, c);
-            b.ch (P_MOD_WAVE, WAVE_REC); rel (P_MOD_COARSE, c, 6.6f, 7.4f); b.norm (P_MOD_GAIN, 0.45f, 0.7f);
-            b.ch (P_MOD2_WAVE, WAVE_REC); rel (P_MOD2_COARSE, c, 15.8f, 16.6f); b.norm (P_MOD2_GAIN, 0.35f, 0.6f);
-            b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 92, 108); b.rnd (P_FILTER_RESO, 0, 20);
-            b.rnd (P_DECAY, 72, 90); b.rnd (P_SLOPE, 10, 30);
+            b.ch (P_MOD_WAVE, WAVE_REC); rel (P_MOD_COARSE, c, 6.6f, 7.4f); b.norm (P_MOD_GAIN, 0.4f, 0.65f);
+            b.ch (P_MOD2_WAVE, WAVE_REC); rel (P_MOD2_COARSE, c, 15.8f, 16.6f); b.norm (P_MOD2_GAIN, 0.3f, 0.55f);
+            b.ch (P_FILTER_TYPE, 1); b.rnd (P_FILTER_FREQ, 90, 104); b.rnd (P_FILTER_RESO, 0, 15);
+            b.rnd (P_DECAY, 48, 60); b.rnd (P_SLOPE, 22, 35);
             break;
         case CymbalType::Bell: // ride bell / ping: sine FM at ~2.6x with a low index, few partials
         default:
             b.ch (P_OSC_WAVE, WAVE_SINE); c = uni (74, 88); b.set (P_OSC_COARSE, c);
-            b.ch (P_MOD_WAVE, WAVE_SINE); rel (P_MOD_COARSE, c, 15.5f, 17.f); b.norm (P_MOD_GAIN, 0.28f, 0.5f);
-            b.ch (P_MOD2_WAVE, WAVE_SINE); rel (P_MOD2_COARSE, c, 27.f, 29.5f); b.norm (P_MOD2_GAIN, 0.12f, 0.3f);
-            if (chance (0.6f)) { b.ch (P_FILTER_TYPE, 2); b.rnd (P_FILTER_FREQ, 85, 105); b.rnd (P_FILTER_RESO, 5, 25); }
-            else { b.ch (P_FILTER_TYPE, 0); b.rnd (P_FILTER_FREQ, 100, 120); b.rnd (P_FILTER_RESO, 0, 15); }
-            b.rnd (P_DECAY, 55, 75); b.rnd (P_SLOPE, 25, 50);
+            b.ch (P_MOD_WAVE, WAVE_SINE); rel (P_MOD_COARSE, c, 15.5f, 17.f); b.norm (P_MOD_GAIN, 0.25f, 0.45f);
+            b.ch (P_MOD2_WAVE, WAVE_SINE); rel (P_MOD2_COARSE, c, 27.f, 29.5f); b.norm (P_MOD2_GAIN, 0.1f, 0.25f);
+            if (chance (0.6f)) { b.ch (P_FILTER_TYPE, 2); b.rnd (P_FILTER_FREQ, 85, 105); b.rnd (P_FILTER_RESO, 5, 20); }
+            else { b.ch (P_FILTER_TYPE, 0); b.rnd (P_FILTER_FREQ, 100, 118); b.rnd (P_FILTER_RESO, 0, 12); }
+            b.rnd (P_DECAY, 38, 50); b.rnd (P_SLOPE, 22, 40);
             break;
     }
-    b.rnd (P_DRIVE, t == CymbalType::China ? 75 : 35, t == CymbalType::China ? 100 : 70);
+    if (t == CymbalType::China) b.rnd (P_DRIVE, 30, 55); else b.rnd (P_DRIVE, 0, 18);
     b.set (P_DECIMATE, 127);
-    b.norm (P_LEVEL, 0.68f, 0.82f);
     b.norm (P_PAN, 0.35f, 0.65f);
     b.norm (P_VEL_VOL, 0.3f, 0.6f);
     b.set (P_LFO_AMT, 0); b.ch (P_LFO_DEST, 0); b.set (P_VEL_AMT, 0); b.ch (P_VEL_DEST, 0);
@@ -364,15 +365,55 @@ Patch Randomizer::cymbal (CymbalType t, const Patch& current, Genre g)
     {
         case Genre::Jungle: case Genre::BoomBap: b.rnd (P_DECIMATE, 80, 108); break;
         case Genre::LoFi: b.rnd (P_DECIMATE, 62, 92); b.p[P_FILTER_FREQ] = std::max (0.f, b.p[P_FILTER_FREQ] - uni (0.02f, 0.08f)); break;
-        case Genre::Industrial: b.rnd (P_DRIVE, 105, 127); if (chance (0.4f)) b.rnd (P_DECIMATE, 70, 105); break;
-        case Genre::Trap: case Genre::Garage: b.p[P_DECAY] = std::max (0.f, b.p[P_DECAY] - uni (0.03f, 0.08f)); break;
+        case Genre::Industrial: b.rnd (P_DRIVE, 40, 70); if (chance (0.4f)) b.rnd (P_DECIMATE, 70, 105); break;
+        case Genre::Trap: case Genre::Garage: b.p[P_DECAY] = std::max (0.f, b.p[P_DECAY] - uni (0.03f, 0.07f)); break;
         default: break;
     }
     p[P_OUTPUT] = current[P_OUTPUT];
     p[P_CHOKE] = current[P_CHOKE];
     p[P_LFO_RETRIG] = current[P_LFO_RETRIG];
     for (int i = 0; i < NUM_PATCH_PARAMS; ++i) if (isFeelParam (i)) p[(size_t) i] = current[(size_t) i];
+    fitCymbalLevel (p);
     return p;
+}
+
+// K-weighted short-term loudness (ITU BS.1770 filter shape, 400 ms window) of one full-velocity hit
+float Randomizer::hitLoudness (const Patch& p)
+{
+    constexpr double sr = 44100.0;
+    Voice v;
+    v.prepare (sr, 17);
+    for (int i = 0; i < NUM_PATCH_PARAMS; ++i) v.setParam (i, p[(size_t) i]);
+    v.setParam (P_VARIANCE, 0.f);
+    v.trigger (1.f, 60);
+    std::vector<float> x ((size_t) (sr * 0.45));
+    v.render (x.data(), (int) x.size());
+    struct Bq { double b0, b1, b2, a1, a2, z1 = 0, z2 = 0; double run (double in) { const double y = b0 * in + z1; z1 = b1 * in - a1 * y + z2; z2 = b2 * in - a2 * y; return y; } };
+    const double pi = 3.14159265358979;
+    Bq shelf, hp;
+    {
+        const double K = std::tan (pi * 1681.97 / sr), Q = 0.7071752, Vh = std::pow (10.0, 3.99984 / 20.0), Vb = std::pow (Vh, 0.4996668);
+        const double a0 = 1 + K / Q + K * K;
+        shelf = { (Vh + Vb * K / Q + K * K) / a0, 2 * (K * K - Vh) / a0, (Vh - Vb * K / Q + K * K) / a0, 2 * (K * K - 1) / a0, (1 - K / Q + K * K) / a0 };
+    }
+    {
+        const double K = std::tan (pi * 38.13547 / sr), Q = 0.500327, a0 = 1 + K / Q + K * K;
+        hp = { 1 / a0, -2 / a0, 1 / a0, 2 * (K * K - 1) / a0, (1 - K / Q + K * K) / a0 };
+    }
+    double e = 0;
+    const size_t w = (size_t) (sr * 0.4);
+    for (size_t i = 0; i < x.size(); ++i) { const double y = hp.run (shelf.run (x[i])); if (i < w) e += y * y; }
+    return (float) (-0.691 + 10.0 * std::log10 (e / (double) w + 1e-12));
+}
+
+// Cymbals sit about 10 dB under a typical snare (around -25 LUFS for a full-velocity hit), so
+// their level is set from a measured hit rather than guessed from the recipe.
+void Randomizer::fitCymbalLevel (Patch& p)
+{
+    p[P_LEVEL] = 0.5f;
+    const float target = uni (-27.5f, -24.5f);
+    const float now = hitLoudness (p);
+    p[P_LEVEL] = std::clamp (0.5f * std::pow (10.f, (target - now) / 20.f), 0.04f, 0.9f);
 }
 
 CymbalType Randomizer::cymbalTypeFor (Genre g)
@@ -577,6 +618,41 @@ void Randomizer::applyGenre (Patch& p, Flavor f, Genre g)
             break;
         default: break;
     }
+}
+
+Patch Randomizer::mutateSound (const Patch& base, float depth)
+{
+    Patch p = base;
+    depth = std::clamp (depth, 0.f, 1.f);
+    const Model m = (Model) choiceIndex (base[P_MODEL], 4);
+    const bool metal = m == Model::Cymbal || m == Model::HiHat;
+    const auto nudge = [&] (int id, float range, float lo = 0.f, float hi = 1.f)
+    {
+        p[(size_t) id] = std::clamp (p[(size_t) id] + uni (-1.f, 1.f) * range * depth, lo, hi);
+    };
+    nudge (P_OSC_COARSE, (metal ? 1.5f : 2.0f) / 127.f);   // semitones
+    nudge (P_OSC_FINE, 0.12f);
+    nudge (P_MOD_COARSE, (metal ? 1.2f : 3.0f) / 127.f);   // carrier : modulator ratio drifts
+    nudge (P_MOD2_COARSE, (metal ? 1.2f : 3.0f) / 127.f);
+    nudge (P_MOD_GAIN, 0.14f);
+    nudge (P_MOD2_GAIN, 0.14f);
+    nudge (P_PITCH_AMT, 0.14f);
+    nudge (P_PITCH_DECAY, 0.12f);
+    nudge (P_DECAY, 0.10f);
+    nudge (P_SLOPE, 0.10f);
+    nudge (P_NOISE_MIX, 0.14f);
+    nudge (P_NOISE_FREQ, 0.12f);
+    nudge (P_FILTER_FREQ, 0.14f);
+    nudge (P_FILTER_RESO, 0.10f, 0.f, std::max (0.85f, base[P_FILTER_RESO]));
+    nudge (P_FILTER_DRIVE, 0.10f);
+    nudge (P_TRANS_VOL, 0.14f);
+    nudge (P_TRANS_FREQ, 0.14f);
+    nudge (P_DRIVE, 0.12f);
+    nudge (P_ATTACK, 0.02f);
+    if (base[P_DECIMATE] < 0.99f) nudge (P_DECIMATE, 0.08f);
+    if (chance (depth * 0.12f)) p[P_TRANS_WAVE] = choiceValue (irange (0, paramDef (P_TRANS_WAVE).numChoices - 1), paramDef (P_TRANS_WAVE).numChoices);
+    if (m == Model::Cymbal) fitCymbalLevel (p); // a mutated cymbal never jumps out of the mix
+    return p;
 }
 
 Patch Randomizer::alter (const Patch& in, float amount)
@@ -1411,6 +1487,19 @@ void Randomizer::applyCharacter (Patch& p, KitCharacter c)
     Builder b { p, *this };
     using namespace lxr;
     const Model m = (Model) choiceIndex (p[P_MODEL], 4);
+    if (m == Model::Cymbal) // the curated cymbals keep their own tone; a character only nudges them
+    {
+        switch (c)
+        {
+            case KitCharacter::Analog:   b.rnd (P_DRIVE, 10, 30); break;
+            case KitCharacter::Gritty:   b.rnd (P_DRIVE, 30, 55); break;
+            case KitCharacter::LoFi:     b.rnd (P_DECIMATE, 70, 100); b.rnd (P_FILTER_FREQ, 66, 84); break;
+            case KitCharacter::Metallic: b.norm (P_MOD_GAIN, std::min (1.f, p[P_MOD_GAIN] + 0.1f), std::min (1.f, p[P_MOD_GAIN] + 0.2f)); break;
+            case KitCharacter::Clean: default: b.rnd (P_DRIVE, 0, 12); break;
+        }
+        fitCymbalLevel (p);
+        return;
+    }
     switch (c)
     {
         case KitCharacter::Clean:
@@ -1430,7 +1519,6 @@ void Randomizer::applyCharacter (Patch& p, KitCharacter c)
             else b.rnd (P_FILTER_FREQ, 70, 95);
             break;
         case KitCharacter::Metallic:
-            if (m == Model::Cymbal) { b.rnd (P_DRIVE, 60, 95); break; } // the curated cymbals are metallic already
             if (m == Model::Drum)
             {
                 static const int w[] = { WAVE_REC, WAVE_SAW, WAVE_SINE };

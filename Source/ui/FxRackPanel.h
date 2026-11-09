@@ -32,10 +32,11 @@ public:
     static juce::Colour categoryColour (const char* category);
 
 private:
-    struct Hit { enum Kind { None, BusTab, Send, Slot, Power, LaneMute } kind = None; int a = -1, b = -1; };
+    struct Hit { enum Kind { None, BusTab, Send, Dest, Slot, Power, LaneMute } kind = None; int a = -1, b = -1; };
     Hit findHit (juce::Point<int> p) const;
-    juce::Rectangle<int> busTab (int b) const;
-    juce::Rectangle<int> sendChip (int ch) const;
+    juce::Rectangle<int> busTab (int b) const;              // the bus's node in the routing map
+    juce::Rectangle<int> sendChip (int b, int ch) const;    // channel chips in front of FX 1 / FX 2
+    juce::Rectangle<int> destArea (int b) const;            // where the bus goes
     juce::Rectangle<int> laneArea (int lane) const;
     juce::Rectangle<int> slotArea (int lane, int slot) const;
     juce::Rectangle<int> powerArea (int lane, int slot) const;
@@ -54,7 +55,10 @@ private:
     void showChainMenu();
     void rollChain();
     void applyBus (const ferrum::fx::RackState::Bus& b, const juce::String& what);
-    void toggleSend (int ch);
+    void toggleSend (int bus, int ch);
+    void showDestMenu (int b);
+    juce::String destName (int b) const;
+    juce::String flowText() const;                          // the selected bus's signal flow in words
     juce::String slotSummary (int lane, int slot, int line) const;
     juce::String routedChannels (int b) const;
 
@@ -68,7 +72,7 @@ private:
     juce::Point<int> dragPos;
 
     Knob dryKnob, outKnob;
-    Segmented outputSel;
+    Segmented modeSel;   // Insert (dry 0 %) / Parallel (dry 100 %)
     IconButton chainsBtn { IconButton::Icon::Down, "Chains" }, diceBtn { IconButton::Icon::Dice, "Roll Chain" };
     std::array<Knob, ferrum::fx::kLanes> laneKnobs;
     // module editor
@@ -78,6 +82,6 @@ private:
                resetBtn { IconButton::Icon::None, "Reset" }, removeBtn { IconButton::Icon::None, "Remove" }, swapBtn { IconButton::Icon::Down, "Change" };
     std::array<float, ferrum::fx::kBuses> meters {};
     uint32_t diceSeed = 0x5eed1234u;
-    juce::Rectangle<int> header, grid, editor, editorInfo;
+    juce::Rectangle<int> header, flowBand, grid, editor, editorInfo;
 };
 } // namespace ui
