@@ -57,10 +57,18 @@ public:
     Patch cymbal (CymbalType t, const Patch& current, Genre g = Genre::Any);
     // Sound mutation: small moves of the sound-shaping parameters (pitch, decay, tone, filter, noise,
     // FM depth, transient, drive) around 'base'. depth 0..1. Model, level, pan and routing never change.
-    Patch mutateSound (const Patch& base, float depth);
+    // key >= 0: pitched drums move by steps of the minor pentatonic in that key and stay in tune
+    Patch mutateSound (const Patch& base, float depth, int key = -1);
     CymbalType cymbalTypeFor (Genre g);                    // a type that suits the genre (weighted)
     Genre genreFor (const DiceSettings& s);                // resolves "follow the beat style"
     Patch alter (const Patch& p, float amount = 0.12f);    // "Alter Drum Patch"
+    // Partial dice: 'cur' moved 'amount' (0..1) of the way to 'target'. Continuous parameters blend;
+    // a choice parameter switches with probability amount^2 (the model only at amount >= 0.98).
+    Patch blendToward (const Patch& cur, const Patch& target, float amount);
+    // Partial beat dice: takes about amount * (number of steps that differ) steps of 'fresh' into 'cur',
+    // at least one when anything differs. lane < 0: whole steps (trig, accent, fill, every expression
+    // lane); lane >= 0: only that expression lane. Channels in 'keep' are left alone.
+    void blendSteps (PatternData& cur, const PatternData& fresh, float amount, const ChannelMask& keep, int lane = -1);
     static Flavor guessFlavor (const Patch& p);
 
     void randomizePattern (PatternData& d, const std::array<Flavor, kNumChannels>& roles, int onlyChannel = -1);
@@ -92,6 +100,9 @@ public:
     void applyGenre (Patch& p, Flavor f, Genre g);        // genre ranges on top of a flavor recipe
 public:
     static float hitLoudness (const Patch& p);            // K-weighted loudness of one full-velocity hit (LUFS)
+    // sets P_LEVEL (within lo..hi) so a hit measures 'ref' LUFS; a few measured steps because drive and
+    // the voice's output stage are not linear. Returns the loudness reached.
+    static float matchLoudness (Patch& p, float ref, float lo, float hi);
     void fitCymbalLevel (Patch& p);                       // level so the hit sits ~10 dB under a snare
     static void tuneToKey (Patch& p, int key);
 

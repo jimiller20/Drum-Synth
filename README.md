@@ -141,6 +141,46 @@ becomes FX 1 with the matching LXR module, Output "FX" becomes FX 1.
   9 dB under a typical snare.
 - The dice never change a channel's Output.
 
+## FX Morph, partial dice, MOD strip, step variations (added Nov 9 2026, round 4)
+
+- **Per-channel outputs, easier to find**: a channel's Output now reads **Ch n Out** (DRUMS > Routing),
+  the channel strip shows `> CH n OUT`, and Main menu > **Outputs (multi-out)** sends every channel to
+  its own output in one go (or back to A). The tour has a page on routing them to FL's mixer.
+- **Click position sets how much a dice changes** (left edge ~1 %, middle ~50 %, right edge 100 %;
+  the last 8 % of the width is a full roll). Every dice button shows a thin scale along its bottom
+  and the amount under the mouse while hovering. Below 100 %: sounds move that share of the way
+  towards a new sound of the same model (keeping names, models and routing; choices switch with
+  probability amount squared), beats take that share of the steps that differ from a fresh roll (at
+  least one), Alter alters by that amount, Roll Chain only moves the settings of the modules already
+  in the bus, Mutate Now mutates that deep, Morph B moves the B ends part of the way.
+- **First-run tour** (Main menu > Show Tutorial): seven pages covering the layout, the positional
+  dice, morph and mutation, modulation, the FX rack and FX Morph, multi-out in FL Studio and step
+  variations. It is shown once (remembered in the user settings file).
+- **MOD strip** at the right of the sound section: the six modulators as tiles with a live value -
+  drag one onto any sound knob to add a route at 30 % (an empty slot becomes an LFO), click to open it
+  on the MOD tab, right-click for its type. Below them the selected channel's routes with a depth bar
+  (drag, Shift = fine, double-click = 0) and a remove button.
+- **Sound mutation stays in key**: with a Dice key set, pitched drums (drum and snare voices) move in
+  steps of the minor pentatonic and stay in tune. **Loudness stays even**: after each mutation the
+  level is set so the hit measures as loud (K-weighted) as the home sound, so more drive brings the
+  level down (e.g. drive 0.50 -> 0.85 takes the level from 1.00 to 0.46 at the same loudness). A
+  sound already at full level can't be raised further when a mutation makes it quieter, so leave a
+  little headroom on channels you mutate.
+- **Ferric feedback above 80 %**: a resonant band-pass tuned by Cutoff joins the loop (Q ~3.6,
+  unity peak so the loop stays below 1): about +3 dB at 90 % and +5-9 dB at 100 % around the Cutoff.
+  The distortion modes and drive are bit-identical, and so is the feedback up to 80 %.
+- **FX Morph** (FX RACK > FX Morph, or the MORPH pad in the FX RACK section at the bottom): store up to
+  four rack setups as scenes in the corners of an XY pad, turn Morph on and move the puck (host
+  parameters **FX Morph X / Y**). Settings of the same module blend; a module fades in and out with
+  the share of the weight of the scenes that hold it, and a slot that holds different modules in
+  different scenes crossfades between them. Blending happens on the audio thread, so automation and
+  offline renders follow it. Dry, Out, lane levels and bus outputs stay the rack's own. With Morph on,
+  the rack shows the edit scene (Edit) and every change goes into it.
+- **Step variations per channel**: right-click the Roll Steps dice (or its arrow) to let the selected
+  channel re-roll its own steps in the playing pattern every 1-16 loops, by 5-100 % of the steps,
+  around the original (Orbit; turning it off restores the original) or wandering (Drift). Saved per
+  channel; the channel strip shows `~VAR`.
+
 ## Status (handoff, Oct 28 2026)
 
 Done and tested on Linux (Windows build not yet tried):
@@ -154,7 +194,7 @@ Done and tested on Linux (Windows build not yet tried):
   C2-G2 mute, C3-B3 patterns, C4 stop), pitched mode, pattern launch modes, MIDI out.
 - **Randomizer**: per-sound recipes (kick, tom, perc, zap, snare, clap, hats, cymbal, chaos),
   alter, randomize all, random morph targets, rhythm-aware pattern randomizer.
-- **Plugin**: 398 host parameters including Macro 1-6 (the FX rack and modulators are saved with presets), morph A/B end points, presets (.f8preset), drum patches
+- **Plugin**: 400 host parameters including Macro 1-6 and FX Morph X / Y (the FX rack and modulators are saved with presets), morph A/B end points, presets (.f8preset), drum patches
   (.f8drum), undo/redo (40), MIDI-file export + drag-out, WAV export, 5 factory kits.
 - **UI**: all sections working, DRUMS and FX RACK tabs, zoom 60-200%. Snapshots look right.
 - Tests: `tests/engine_identity.cpp` (the sequencer plays the LXR voices bit-identically when expression and feel are off; build line at the top of the file), `tests/render_test.cpp` (engine), `tests/plugin_tests.cpp` (processor + UI snapshots,

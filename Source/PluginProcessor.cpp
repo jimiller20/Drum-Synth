@@ -60,6 +60,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout Ferrum8Processor::createLayo
     for (int m = 0; m < mod::kMods; ++m) // a modulator set to Macro follows its knob, so the host can automate it
         layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "macro" + String (m + 1), 1 }, "Macro " + String (m + 1),
                                                            NormalisableRange<float> (0.f, 1.f), 0.f, pct));
+    // FX Morph pad: X left (scenes 1, 3) .. right (2, 4), Y top (1, 2) .. bottom (3, 4)
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "fxMorphX", 1 }, "FX Morph X", NormalisableRange<float> (0.f, 1.f), 0.f, pct));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "fxMorphY", 1 }, "FX Morph Y", NormalisableRange<float> (0.f, 1.f), 0.f, pct));
     return layout;
 }
 
@@ -94,6 +97,8 @@ Ferrum8Processor::Ferrum8Processor()
     pFill = apvts.getRawParameterValue ("fillRate");
     pMaster = apvts.getRawParameterValue ("master");
     for (int m = 0; m < mod::kMods; ++m) pMacro[(size_t) m] = apvts.getRawParameterValue ("macro" + juce::String (m + 1));
+    pFxX = apvts.getRawParameterValue ("fxMorphX");
+    pFxY = apvts.getRawParameterValue ("fxMorphY");
     for (int m = 0; m < mod::kMods; ++m) modStates[(size_t) m] = mod::ModState {};
     pTempo = apvts.getRawParameterValue ("tempo");
     pMorph = apvts.getRawParameterValue ("morph");
@@ -191,19 +196,30 @@ void Ferrum8Processor::setPatch (int ch, const Patch& in, bool alsoMorphTarget, 
 void Ferrum8Processor::setSoundMutation (int ch, const SoundMutation& m)
 {
     auto& cur = soundMut[(size_t) ch];
-    if (cur.every == 0 && m.every > 0) { mutHome[(size_t) ch] = getActiveEnd (ch); mutHomeSet[(size_t) ch] = true; mutLoops[(size_t) ch] = 0; }
+    if (cur.every == 0 && m.every > 0) { mutHome[(size_t) ch] = getActiveEnd (ch); mutHomeSet[(size_t) ch] = true; mutHomeLoud[(size_t) ch] = 1e9f; mutLoops[(size_t) ch] = 0; }
     cur = m;
     cur.depth = juce::jlimit (0.f, 1.f, cur.depth);
     presetDirty = true;
 }
 
-void Ferrum8Processor::mutateSoundNow (int ch)
+void Ferrum8Processor::mutateSoundNow (int ch, float depth)
 {
     const auto& m = soundMut[(size_t) ch];
-    if (! mutHomeSet[(size_t) ch]) { mutHome[(size_t) ch] = getActiveEnd (ch); mutHomeSet[(size_t) ch] = true; }
+    if (depth < 0.f) depth = m.depth;
+    if (! mutHomeSet[(size_t) ch]) { mutHome[(size_t) ch] = getActiveEnd (ch); mutHomeSet[(size_t) ch] = true; mutHomeLoud[(size_t) ch] = 1e9f; }
     Patch base = m.mode == 0 ? mutHome[(size_t) ch] : getActiveEnd (ch);
     if (choiceIndex (base[P_MODEL], 4) != choiceIndex (getActiveEnd (ch)[P_MODEL], 4)) base = getActiveEnd (ch);
-    const Patch p = randomizer.mutateSound (base, m.depth);
+    Patch p = randomizer.mutateSound (base, depth, dice.key);
+    // keep the loudness even: more drive (or a brighter filter, a longer decay ...) brings the level
+    // down, less brings it back up - measured against the home sound, so it never creeps
+    if (mutHomeLoud[(size_t) ch] > 1e8f) mutHomeLoud[(size_t) ch] = Randomizer::hitLoudness (mutHome[(size_t) ch]);
+    const float ref = mutHomeLoud[(size_t) ch];
+    if (ref > -90.f)
+    {
+        // the level may go down a long way (heavy drive) but only up to full level
+        const float homeLevel = mutHome[(size_t) ch][P_LEVEL];
+        Randomizer::matchLoudness (p, ref, std::max (0.02f, homeLevel * 0.2f), 1.f);
+    }
     mutating = true;
     setPatchAtActiveEnd (ch, p);
     mutating = false;
@@ -214,6 +230,7 @@ void Ferrum8Processor::keepMutationHome (int ch)
 {
     mutHome[(size_t) ch] = getActiveEnd (ch);
     mutHomeSet[(size_t) ch] = true;
+    mutHomeLoud[(size_t) ch] = 1e9f;
 }
 
 void Ferrum8Processor::restoreMutationHome (int ch)
@@ -271,17 +288,112 @@ float Ferrum8Processor::modDepthOn (const mod::Route& target) const
     return d;
 }
 
+//==============================================================================================
+// FX Morph
+void Ferrum8Processor::publishFxMorph()
+{
+    engine.rack.setMorphScenes (fxScenesUsed, fxScenes);
+    engine.rack.setMorphOn (fxMorphOn);
+}
+
+juce::String Ferrum8Processor::fxSceneSummary (int i) const
+{
+    if (! fxScenesUsed[(size_t) i]) return "empty";
+    juce::StringArray buses;
+    for (int b = 0; b < fx::kBuses; ++b)
+    {
+        juce::StringArray names;
+        for (const auto& l : fxScenes[(size_t) i].buses[(size_t) b].lanes)
+            for (const auto& sl : l.slots) if (sl.type != fx::Type::None) names.add (fx::info (sl.type).name);
+        if (! names.isEmpty()) buses.add (juce::String (fx::busName (b)) + ": " + names.joinIntoString (" > "));
+    }
+    return buses.isEmpty() ? juce::String ("no modules (effects fade out here)") : buses.joinIntoString ("  |  ");
+}
+
+void Ferrum8Processor::storeFxScene (int i)
+{
+    if (i < 0 || i >= kFxScenes) return;
+    fxScenes[(size_t) i] = engine.rack.getState();
+    fxScenesUsed[(size_t) i] = true;
+    fxEdit = i;
+    publishFxMorph();
+    presetDirty = true;
+    sendUiChange();
+}
+
+void Ferrum8Processor::recallFxScene (int i)
+{
+    if (i < 0 || i >= kFxScenes || ! fxScenesUsed[(size_t) i]) return;
+    // the scene's modules; Dry, Out, lane levels and outputs stay as they are
+    auto st = engine.rack.getState();
+    for (int b = 0; b < fx::kBuses; ++b)
+        for (int l = 0; l < fx::kLanes; ++l)
+            st.buses[(size_t) b].lanes[(size_t) l].slots = fxScenes[(size_t) i].buses[(size_t) b].lanes[(size_t) l].slots;
+    engine.rack.setState (st);
+    fxEdit = i;
+    presetDirty = true;
+    sendUiChange();
+}
+
+void Ferrum8Processor::clearFxScene (int i)
+{
+    if (i < 0 || i >= kFxScenes) return;
+    fxScenesUsed[(size_t) i] = false;
+    fxScenes[(size_t) i] = {};
+    if (fxEdit == i) fxEdit = -1;
+    publishFxMorph();
+    presetDirty = true;
+    sendUiChange();
+}
+
+void Ferrum8Processor::setFxMorphOn (bool on)
+{
+    fxMorphOn = on;
+    if (on && fxEdit < 0) for (int i = 0; i < kFxScenes && fxEdit < 0; ++i) if (fxScenesUsed[(size_t) i]) fxEdit = i;
+    publishFxMorph();
+    presetDirty = true;
+    sendUiChange();
+}
+
+void Ferrum8Processor::fxRackEdited()
+{
+    if (! fxMorphOn || fxEdit < 0 || ! fxScenesUsed[(size_t) fxEdit]) return;
+    fxScenes[(size_t) fxEdit] = engine.rack.getState();
+    publishFxMorph();
+}
+
+void Ferrum8Processor::setFxMorphXY (float x, float y)
+{
+    setParamValue ("fxMorphX", juce::jlimit (0.f, 1.f, x));
+    setParamValue ("fxMorphY", juce::jlimit (0.f, 1.f, y));
+}
+
+void Ferrum8Processor::fxMorphGesture (bool start)
+{
+    for (auto* id : { "fxMorphX", "fxMorphY" })
+        if (auto* p = apvts.getParameter (id)) { if (start) p->beginChangeGesture(); else p->endChangeGesture(); }
+}
+
+void Ferrum8Processor::routeAllChannels (bool ownOutputs)
+{
+    pushUndo();
+    const int n = paramDef (P_OUTPUT).numChoices;
+    for (int ch = 0; ch < NC; ++ch) setPatchValue (ch, P_OUTPUT, choiceValue (ownOutputs ? 4 : 0, n));
+    presetDirty = true;
+    sendUiChange();
+}
+
 int Ferrum8Processor::setPatchAtActiveEnd (int ch, const Patch& newSound)
 {
     Patch in = newSound;
     in[P_OUTPUT] = getEndA (ch)[P_OUTPUT]; // dice change the sound, never the routing
     const int end = activeEnd();
     const Patch other = end == 0 ? getEndB (ch) : getEndA (ch);
-    if (! mutating) { mutHome[(size_t) ch] = in; mutHomeSet[(size_t) ch] = true; }
+    if (! mutating) { mutHome[(size_t) ch] = in; mutHomeSet[(size_t) ch] = true; mutHomeLoud[(size_t) ch] = 1e9f; }
     if (choiceIndex (other[P_MODEL], 4) != choiceIndex (in[P_MODEL], 4))
     {
         setPatch (ch, in, true);
-        if (! mutating) { mutHome[(size_t) ch] = in; mutHomeSet[(size_t) ch] = true; }
+        if (! mutating) { mutHome[(size_t) ch] = in; mutHomeSet[(size_t) ch] = true; mutHomeLoud[(size_t) ch] = 1e9f; }
         return 2;
     }
     {
@@ -460,6 +572,7 @@ void Ferrum8Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
     engine.setGlobals (g);
     engine.setMidiConfig (getMidiConfig());
     for (int m = 0; m < mod::kMods; ++m) engine.mods.setMacro (m, pMacro[(size_t) m]->load());
+    engine.rack.setMorphXY (pFxX->load(), pFxY->load());
 
     Transport t;
     if (wrapperType != wrapperType_Standalone)
@@ -794,6 +907,7 @@ static Patch treeToPatch (const juce::ValueTree& t, const Patch& fallback)
             const juce::String s = v.toString();
             for (int k = 0; k < d.numChoices; ++k) if (s == d.choices[k]) p[(size_t) i] = choiceValue (k, d.numChoices);
             if (i == P_OUTPUT && s == "FX") p[(size_t) i] = choiceValue (2, d.numChoices); // the single FX bus of version 1
+            if (i == P_OUTPUT && s == "Own") p[(size_t) i] = choiceValue (4, d.numChoices); // early name of "Own Out"
         }
         else p[(size_t) i] = lxr::clamp01 ((float) v);
     }
@@ -842,6 +956,13 @@ juce::ValueTree Ferrum8Processor::createPresetTree() const
             c.setProperty ("mutDepth", m.depth, nullptr);
             c.setProperty ("mutMode", m.mode == 1 ? "Drift" : "Orbit", nullptr);
         }
+        const auto& rr = stepReroll[(size_t) ch];
+        if (rr.every > 0) // per-channel step variations
+        {
+            c.setProperty ("rerollEvery", rr.every, nullptr);
+            c.setProperty ("rerollAmount", rr.amount, nullptr);
+            c.setProperty ("rerollMode", rr.mode == 1 ? "Drift" : "Orbit", nullptr);
+        }
         channels.appendChild (c, nullptr);
     }
     t.appendChild (channels, nullptr);
@@ -870,6 +991,19 @@ juce::ValueTree Ferrum8Processor::createPresetTree() const
         if (auto* p = apvts.getParameter (id)) glob.setProperty (id, p->convertFrom0to1 (p->getValue()), nullptr);
     t.appendChild (glob, nullptr);
     t.appendChild (rackToTree (engine.rack.getState()), nullptr);
+    {
+        juce::ValueTree fm ("FXMORPH");
+        fm.setProperty ("on", fxMorphOn, nullptr);
+        fm.setProperty ("edit", fxEdit, nullptr);
+        for (int i = 0; i < kFxScenes; ++i)
+            if (fxScenesUsed[(size_t) i])
+            {
+                auto sc = rackToTree (fxScenes[(size_t) i]);
+                sc.setProperty ("scene", i, nullptr);
+                fm.appendChild (sc, nullptr);
+            }
+        t.appendChild (fm, nullptr);
+    }
     t.appendChild (modsToTree (modStates, engine.rack.getState()), nullptr);
     return t;
 }
@@ -897,6 +1031,22 @@ void Ferrum8Processor::applyPresetTree (const juce::ValueTree& t, bool loadPatch
         const auto rackTree = t.getChildWithName ("FXRACK");
         if (rackTree.isValid()) engine.rack.setState (treeToRack (rackTree));
         else if (auto legacy = legacyRack (glob)) engine.rack.setState (*legacy);
+        // FX Morph scenes (none in older presets)
+        fxScenes = {};
+        fxScenesUsed = {};
+        const auto fm = t.getChildWithName ("FXMORPH");
+        for (int i = 0; fm.isValid() && i < fm.getNumChildren(); ++i)
+        {
+            const auto sc = fm.getChild (i);
+            const int idx = (int) sc.getProperty ("scene", -1);
+            if (idx < 0 || idx >= kFxScenes) continue;
+            fxScenes[(size_t) idx] = treeToRack (sc);
+            fxScenesUsed[(size_t) idx] = true;
+        }
+        fxMorphOn = fm.isValid() && (bool) fm.getProperty ("on", false);
+        fxEdit = fm.isValid() ? juce::jlimit (-1, kFxScenes - 1, (int) fm.getProperty ("edit", -1)) : -1;
+        if (fxEdit >= 0 && ! fxScenesUsed[(size_t) fxEdit]) fxEdit = -1;
+        publishFxMorph();
     }
     if (loadPatches)
     {
@@ -920,6 +1070,13 @@ void Ferrum8Processor::applyPresetTree (const juce::ValueTree& t, bool loadPatch
             soundMut[(size_t) ch] = m;
             mutHomeSet[(size_t) ch] = false;
             mutLoops[(size_t) ch] = 0;
+            StepReroll rr;
+            rr.every = juce::jlimit (0, 64, (int) c.getProperty ("rerollEvery", 0));
+            rr.amount = juce::jlimit (0.01f, 1.f, (float) c.getProperty ("rerollAmount", 0.25f));
+            rr.mode = c.getProperty ("rerollMode", "Orbit").toString() == "Drift" ? 1 : 0;
+            stepReroll[(size_t) ch] = rr;
+            rerollLoops[(size_t) ch] = 0;
+            for (auto& h : rerollHome[(size_t) ch]) h.reset();
         }
     }
     if (loadPatterns)
@@ -948,7 +1105,11 @@ void Ferrum8Processor::applyPresetTree (const juce::ValueTree& t, bool loadPatch
 
 void Ferrum8Processor::loadKit (const KitData& k)
 {
-    soundMut = {}; // kits start without sound mutation or modulation
+    fxScenes = {}; fxScenesUsed = {}; fxMorphOn = false; fxEdit = -1; // ... or FX Morph
+    publishFxMorph();
+    soundMut = {}; // kits start without sound mutation, step variations or modulation
+    stepReroll = {};
+    for (auto& h : rerollHome) h = {};
     setMods ({}, false);
     setParamValue ("morph", k.morph);
     lastMorph = k.morph;
@@ -1052,6 +1213,16 @@ void Ferrum8Processor::moveChannel (int from, int to)
         setMorphTarget (c, b[(size_t) src]);
         chans[(size_t) c].name = names[(size_t) src];
         setParamValue ("mute" + juce::String (c + 1), mutes[(size_t) src] ? 1.f : 0.f);
+    }
+    {   // a channel's mutation and step-variation settings travel with it
+        const auto mut = soundMut; const auto rr = stepReroll;
+        for (int c = 0; c < NC; ++c)
+        {
+            soundMut[(size_t) c] = mut[(size_t) order[(size_t) c]];
+            stepReroll[(size_t) c] = rr[(size_t) order[(size_t) c]];
+            mutHomeSet[(size_t) c] = false; mutLoops[(size_t) c] = 0; rerollLoops[(size_t) c] = 0;
+            for (auto& h : rerollHome[(size_t) c]) h.reset();
+        }
     }
     for (int p = 0; p < kNumPatterns; ++p)
     {
@@ -1236,21 +1407,75 @@ void Ferrum8Processor::restoreRoll (int index)
     sendUiChange();
 }
 
-juce::String Ferrum8Processor::rollSounds()
+static juce::String amountNote (float amount)
 {
-    pushUndo();
+    return amount >= 0.98f ? juce::String() : " " + juce::String (juce::roundToInt (amount * 100.f)) + " %";
+}
+
+// partial sound dice: every unlocked channel's sound moves 'amount' of the way to a new one of the same model
+int Ferrum8Processor::blendSounds (float amount)
+{
     int n = 0;
     for (int ch = 0; ch < NC; ++ch)
     {
         if (locked[(size_t) ch]) continue;
         const Patch cur = getActiveEnd (ch);
-        const Flavor f = Randomizer::guessFlavor (cur); // keep each channel's job so the beat still fits
-        setPatchAtActiveEnd (ch, randomizer.kitPatch (f, cur, dice));
-        setChannelName (ch, juce::String ("Rnd ") + kFlavorNames[(int) f]);
+        Patch target = randomizer.kitPatch (Randomizer::guessFlavor (cur), cur, dice);
+        if (target[P_MODEL] != cur[P_MODEL])
+        {
+            target = randomizer.patchForModel (cur, randomizer.genreFor (dice));
+            randomizer.applyCharacter (target, dice.character);
+        }
+        Patch p = randomizer.blendToward (cur, target, amount);
+        if (dice.key >= 0) Randomizer::tuneToKey (p, dice.key);
+        setPatchAtActiveEnd (ch, p);
         ++n;
     }
+    return n;
+}
+
+// partial beat dice: the selected pattern (or A-L) takes part of a freshly rolled beat
+void Ferrum8Processor::blendBeat (float amount, bool allPatterns, const std::array<Flavor, NC>& roles, const ChannelMask& keep)
+{
+    if (allPatterns)
+    {
+        std::array<PatternData, kNumPatterns> cur, fresh;
+        for (int p = 0; p < kNumPatterns; ++p) cur[(size_t) p] = fresh[(size_t) p] = engine.patterns.get (p);
+        randomizer.generateSet (fresh, roles, dice, keep);
+        for (int p = 0; p < kNumPatterns; ++p)
+        {
+            fresh[(size_t) p].length = cur[(size_t) p].length;
+            randomizer.blendSteps (cur[(size_t) p], fresh[(size_t) p], amount, keep);
+            engine.patterns.set (p, cur[(size_t) p]);
+        }
+    }
+    else
+    {
+        const int sel = getSelectedPattern();
+        PatternData d = engine.patterns.get (sel), fresh = d;
+        randomizer.generateBeat (fresh, roles, dice, keep, false);
+        randomizer.blendSteps (d, fresh, amount, keep);
+        engine.patterns.set (sel, d);
+    }
+}
+
+juce::String Ferrum8Processor::rollSounds (float amount)
+{
+    pushUndo();
+    int n = 0;
+    if (amount < 0.98f) n = blendSounds (amount);
+    else
+        for (int ch = 0; ch < NC; ++ch)
+        {
+            if (locked[(size_t) ch]) continue;
+            const Patch cur = getActiveEnd (ch);
+            const Flavor f = Randomizer::guessFlavor (cur); // keep each channel's job so the beat still fits
+            setPatchAtActiveEnd (ch, randomizer.kitPatch (f, cur, dice));
+            setChannelName (ch, juce::String ("Rnd ") + kFlavorNames[(int) f]);
+            ++n;
+        }
     presetDirty = true;
-    juce::String label = "Sounds (" + endName (activeEnd()) + ")";
+    juce::String label = "Sounds" + amountNote (amount) + " (" + endName (activeEnd()) + ")";
     {
         const Genre g = (Genre) dice.genre;
         if (dice.genre > 0) label << " - " << kGenreNames[(int) g];
@@ -1259,24 +1484,27 @@ juce::String Ferrum8Processor::rollSounds()
     if (dice.key >= 0) label << " - " << kKeyNames[dice.key] << " minor";
     recordRoll (label);
     sendUiChange();
+    if (amount < 0.98f)
+        return "Sounds moved" + amountNote (amount) + " towards new ones on morph end " + endName (activeEnd()) + " of " + juce::String (n)
+               + " channel" + (n == 1 ? "" : "s") + " (click further right for bigger changes, Ctrl+Z to undo)";
     return "New sounds on morph end " + endName (activeEnd()) + " of " + juce::String (n) + " channel" + (n == 1 ? "" : "s")
            + ", patterns kept (Ctrl+Z to undo)";
 }
 
-juce::String Ferrum8Processor::rollBeat()
+juce::String Ferrum8Processor::rollBeat (float amount)
 {
     pushUndo();
     const auto roles = channelRoles();
     ChannelMask keep {};
     for (int c = 0; c < NC; ++c) keep[(size_t) c] = locked[(size_t) c];
-    juce::String what;
-    if (dice.allPatterns)
+    const juce::String what = dice.allPatterns ? juce::String ("A-L") : juce::String (kPatternNames[getSelectedPattern()]);
+    if (amount < 0.98f) blendBeat (amount, dice.allPatterns, roles, keep);
+    else if (dice.allPatterns)
     {
         std::array<PatternData, kNumPatterns> pats;
         for (int p = 0; p < kNumPatterns; ++p) pats[(size_t) p] = engine.patterns.get (p);
         randomizer.generateSet (pats, roles, dice, keep);
         for (int p = 0; p < kNumPatterns; ++p) engine.patterns.set (p, pats[(size_t) p]);
-        what = "A-L";
     }
     else
     {
@@ -1284,20 +1512,35 @@ juce::String Ferrum8Processor::rollBeat()
         PatternData d = engine.patterns.get (sel);
         randomizer.generateBeat (d, roles, dice, keep);
         engine.patterns.set (sel, d);
-        what = kPatternNames[sel];
     }
     evolveHome = {};
     presetDirty = true;
-    recordRoll (juce::String ("Beat - ") + kBeatStyleNames[(int) dice.style] + " (" + what + ")");
+    recordRoll (juce::String ("Beat") + amountNote (amount) + " - " + kBeatStyleNames[(int) dice.style] + " (" + what + ")");
     sendUiChange();
+    if (amount < 0.98f)
+        return "Beat changed" + amountNote (amount) + " towards a new " + kBeatStyleNames[(int) dice.style] + " beat in "
+               + (dice.allPatterns ? "patterns A-L" : "pattern " + what) + " (click further right for bigger changes, Ctrl+Z to undo)";
     return juce::String ("New ") + kBeatStyleNames[(int) dice.style] + " beat in " + (dice.allPatterns ? "patterns A-L" : "pattern " + what)
            + ", sounds kept (Ctrl+Z to undo)";
 }
 
-juce::String Ferrum8Processor::rollAll()
+juce::String Ferrum8Processor::rollAll (float amount)
 {
     pushUndo();
     auto& r = randomizer;
+    if (amount < 0.98f)
+    {
+        // part of the way: the sounds keep their models and names, A-L take part of a new set
+        blendSounds (amount);
+        ChannelMask keep {};
+        for (int c = 0; c < NC; ++c) keep[(size_t) c] = locked[(size_t) c];
+        blendBeat (amount, true, channelRoles(), keep);
+        evolveHome = {};
+        presetDirty = true;
+        recordRoll (juce::String ("All") + amountNote (amount) + " - " + kBeatStyleNames[(int) dice.style]);
+        sendUiChange();
+        return "Sounds and patterns A-L moved" + amountNote (amount) + " towards a new kit (click further right for bigger changes, Ctrl+Z to undo)";
+    }
     const Flavor second[3] = { Flavor::Tom, Flavor::Perc, Flavor::Zap };
     std::array<Flavor, NC> roles = { Flavor::Kick, second[r.irange (0, 2)], Flavor::Perc, Flavor::Snare,
                                      Flavor::Cymbal, Flavor::ClosedHat, Flavor::OpenHat, Flavor::Clap };
@@ -1316,6 +1559,7 @@ juce::String Ferrum8Processor::rollAll()
     r.generateSet (pats, roles, dice, keep);
     for (int p = 0; p < kNumPatterns; ++p) engine.patterns.set (p, pats[(size_t) p]);
     evolveHome = {};
+    for (auto& h : rerollHome) h = {};
     presetName = "Random Kit";
     presetFile = juce::File();
     presetDirty = true;
@@ -1325,21 +1569,28 @@ juce::String Ferrum8Processor::rollAll()
     return juce::String ("New kit + ") + kBeatStyleNames[(int) dice.style] + " patterns A-L (A main, B variation, C fill, D busier, E breakdown, F build ... ) - Ctrl+Z to undo";
 }
 
-juce::String Ferrum8Processor::rollChannelSteps (int ch)
+juce::String Ferrum8Processor::rollChannelSteps (int ch, float amount)
 {
     pushUndo();
     ChannelMask keep {};
     for (int c = 0; c < NC; ++c) keep[(size_t) c] = c != ch;
     const int sel = getSelectedPattern();
     PatternData d = engine.patterns.get (sel);
-    randomizer.generateBeat (d, channelRoles(), dice, keep, false);
+    if (amount < 0.98f)
+    {
+        PatternData fresh = d;
+        randomizer.generateBeat (fresh, channelRoles(), dice, keep, false);
+        randomizer.blendSteps (d, fresh, amount, keep);
+    }
+    else randomizer.generateBeat (d, channelRoles(), dice, keep, false);
     engine.patterns.set (sel, d);
+    rerollHome[(size_t) ch][(size_t) sel].reset();   // a hand-rolled channel is the new original
     presetDirty = true;
     sendUiChange();
-    return "New steps for channel " + juce::String (ch + 1) + " (" + kBeatStyleNames[(int) dice.style] + ")";
+    return "New steps" + amountNote (amount) + " for channel " + juce::String (ch + 1) + " (" + kBeatStyleNames[(int) dice.style] + ")";
 }
 
-juce::String Ferrum8Processor::rollMorphTargets()
+juce::String Ferrum8Processor::rollMorphTargets (float amount)
 {
     pushUndo();
     for (int ch = 0; ch < NC; ++ch)
@@ -1348,10 +1599,88 @@ juce::String Ferrum8Processor::rollMorphTargets()
         const Patch cur = getCurrentPatch (ch);
         Patch b = randomizer.kitPatch (Randomizer::guessFlavor (cur), cur, dice);
         b[P_MODEL] = cur[P_MODEL];
+        if (amount < 0.98f)
+        {
+            Patch oldB = getEndB (ch);
+            oldB[P_MODEL] = cur[P_MODEL];
+            b = randomizer.blendToward (oldB, b, amount);
+        }
         setMorphTarget (ch, b);
     }
     sendUiChange();
-    return "New morph targets (B) for every unlocked channel - move Sound Morph to explore";
+    return "New morph targets (B)" + amountNote (amount) + " for every unlocked channel - move Sound Morph to explore";
+}
+
+//==============================================================================================
+// Per-channel step variations
+void Ferrum8Processor::setStepReroll (int ch, const StepReroll& r)
+{
+    auto& cur = stepReroll[(size_t) ch];
+    const bool leavingOrbit = cur.every > 0 && cur.mode == 0 && (r.every == 0 || r.mode != 0);
+    if (leavingOrbit) restoreStepRerollHome (ch);         // like Evolve: Orbit off brings the original back
+    if (r.every == 0 || r.mode != 0) for (auto& h : rerollHome[(size_t) ch]) h.reset();
+    cur = r;
+    cur.amount = juce::jlimit (0.01f, 1.f, cur.amount);
+    rerollLoops[(size_t) ch] = 0;
+    presetDirty = true;
+    sendUiChange();
+}
+
+bool Ferrum8Processor::hasStepRerollHome (int ch) const
+{
+    for (const auto& h : rerollHome[(size_t) ch]) if (h) return true;
+    return false;
+}
+
+void Ferrum8Processor::restoreStepRerollHome (int ch)
+{
+    for (int p = 0; p < kNumPatterns; ++p)
+    {
+        auto& h = rerollHome[(size_t) ch][(size_t) p];
+        if (! h) continue;
+        PatternData d = engine.patterns.get (p);
+        d.setChannel (ch, *h);
+        engine.patterns.set (p, d);
+        h.reset();
+    }
+    sendUiChange();
+}
+
+void Ferrum8Processor::keepStepRerollHome (int ch)
+{
+    for (auto& h : rerollHome[(size_t) ch]) h.reset();
+}
+
+void Ferrum8Processor::stepRerollTick (int loops)
+{
+    if (engine.uiState.load() != (int) SeqState::Playing) { rerollLoops = {}; return; }
+    const int p = engine.uiLastStartedPattern.load();
+    if (p < 0 || p >= kNumPatterns) return;
+    std::optional<std::array<Flavor, NC>> roles;
+    for (int ch = 0; ch < NC; ++ch)
+    {
+        const auto& r = stepReroll[(size_t) ch];
+        if (r.every <= 0 || locked[(size_t) ch]) { rerollLoops[(size_t) ch] = 0; continue; }
+        rerollLoops[(size_t) ch] += loops;
+        if (rerollLoops[(size_t) ch] < r.every) continue;
+        rerollLoops[(size_t) ch] = 0;
+        PatternData d = engine.patterns.get (p);
+        auto& home = rerollHome[(size_t) ch][(size_t) p];
+        if (r.mode == 0)
+        {
+            if (! home) home = d.channel (ch);
+            d.setChannel (ch, *home);
+        }
+        if (! roles) roles = channelRoles();
+        ChannelMask keep {};
+        for (int c = 0; c < NC; ++c) keep[(size_t) c] = c != ch;
+        PatternData fresh = d;
+        randomizer.generateBeat (fresh, *roles, dice, keep, false);
+        randomizer.blendSteps (d, fresh, r.amount, keep);
+        engine.patterns.set (p, d);
+        ++rerollCount[(size_t) ch];
+        presetDirty = true;
+    }
 }
 
 void Ferrum8Processor::setEvolve (int mode)
@@ -1381,6 +1710,7 @@ void Ferrum8Processor::evolveTick()
     const int loops = (int) (starts - lastPatternStarts);
     lastPatternStarts = starts;
     soundMutationTick (loops);
+    stepRerollTick (loops);
     if (dice.evolve == 0 || engine.uiState.load() != (int) SeqState::Playing) { loopsSinceEvolve = 0; return; }
     loopsSinceEvolve += loops;
     if (loopsSinceEvolve < juce::jmax (1, dice.evolveEvery)) return;
@@ -1460,6 +1790,10 @@ bool Ferrum8Processor::exportPatternAudio (const juce::File& f, int pattern, int
     const int block = 512;
     e->prepare (sr, block);
     e->rack.setState (engine.rack.getState());
+    e->rack.setMorphScenes (fxScenesUsed, fxScenes);
+    e->rack.setMorphOn (fxMorphOn);
+    e->rack.setMorphXY (pFxX->load(), pFxY->load());
+    e->rack.prepare (sr, block);   // takes the morph instances over
     e->mods.setState (modStates);
     for (int m = 0; m < mod::kMods; ++m) e->mods.setMacro (m, pMacro[(size_t) m]->load());
     for (int c = 0; c < NC; ++c)

@@ -80,9 +80,15 @@ FxRackPanel::FxRackPanel (Ferrum8Processor& p) : proc (p), rack (p.getRack())
                       } });
     }
     chainsBtn.setTooltip ("Ready-made chains for this bus (Brut Crunch, Amp + Cab, Dub Echo, Drum Bus ...), clear or copy the bus");
-    diceBtn.setTooltip ("Roll a random chain for this bus: series drive and tone, or parallel dirt and space. Undo brings the last one back.");
+    diceBtn.setTooltip ("Roll a random chain for this bus: series drive and tone, or parallel dirt and space. Clicked at the right edge "
+                        "it builds a new chain; further left it only moves the settings of the modules already there, by that much. "
+                        "Undo brings the last one back.");
     chainsBtn.onClick = [this] { showChainMenu(); };
-    diceBtn.onClick = [this] { rollChain(); };
+    diceBtn.setPositional (true);
+    addAndMakeVisible (morphBtn);
+    morphBtn.setTooltip ("FX Morph: store up to four rack setups as scenes and blend between them on an XY pad");
+    morphBtn.onClick = [this] { if (onOpenMorph) onOpenMorph(); };
+    diceBtn.onClick = [this] { rollChain (diceBtn.clickAmount()); };
     diceBtn.setAccent (col::accent);
 
     bypassBtn.setClickingTogglesState (false);
@@ -200,6 +206,12 @@ void FxRackPanel::refresh()
 
 void FxRackPanel::syncHeader()
 {
+    {
+        const bool on = proc.isFxMorphOn();
+        morphBtn.setToggleState (on, dontSendNotification);
+        morphBtn.setButtonText (on ? (proc.fxEditScene() >= 0 ? "Morph: edit sc " + String (proc.fxEditScene() + 1) : String ("Morph: on"))
+                                   : String ("FX Morph"));
+    }
     dryKnob.refresh();
     outKnob.refresh();
     for (auto& k : laneKnobs) k.refresh();
@@ -283,7 +295,8 @@ void FxRackPanel::syncEditor()
 void FxRackPanel::edited (bool structural)
 {
     proc.presetDirty = true;
-    if (structural) proc.rackChanged();
+    if (structural) proc.rackChanged();   // (also follows the FX Morph edit scene)
+    else proc.fxRackEdited();             // FX Morph on: the edit scene follows the rack
 }
 
 //==============================================================================================
@@ -444,9 +457,46 @@ static String chainText (const fxr::RackState::Bus& b)
     return lanes.isEmpty() ? String ("empty") : lanes.joinIntoString ("  |  ");
 }
 
-void FxRackPanel::rollChain()
+void FxRackPanel::rollChain (float amount)
 {
     diceSeed = (uint32_t) Random::getSystemRandom().nextInt();
+    if (amount < 0.98f && rack.hasModules (bus))
+    {
+        // part of the way: the modules stay, their settings move 'amount' towards random values around
+        // each parameter's default (a choice switches now and then); routing, dry and lanes are kept
+        proc.pushUndo();
+        Random rnd ((int64) diceSeed);
+        int n = 0;
+        for (int l = 0; l < fxr::kLanes; ++l)
+            for (int sl = 0; sl < fxr::kSlots; ++sl)
+            {
+                const auto t = rack.moduleType (bus, l, sl);
+                if (t == fxr::Type::None) continue;
+                const auto& inf = fxr::info (t);
+                for (int i = 0; i < (int) inf.params.size() && i < fxr::kMaxParams; ++i)
+                {
+                    const auto& ps = inf.params[(size_t) i];
+                    const float cur = rack.param (bus, l, sl, i);
+                    float v = cur;
+                    if (ps.scale == fxr::Scale::Choice)
+                    {
+                        if (rnd.nextFloat() < amount * amount * 0.5f) v = fxr::choiceNorm (ps, rnd.nextInt ((int) ps.choices.size()));
+                    }
+                    else
+                    {
+                        const float target = jlimit (0.f, 1.f, ps.def + (rnd.nextFloat() * 2.f - 1.f) * 0.45f);
+                        v = cur + (target - cur) * amount;
+                    }
+                    rack.setParam (bus, l, sl, i, v);
+                }
+                ++n;
+            }
+        edited (true);
+        showBus (bus);
+        if (showStatus) showStatus (String ("Moved the settings of ") + String (n) + " module" + (n == 1 ? "" : "s") + " on " + fxr::busName (bus)
+                                    + " by " + IconButton::amountText (amount) + " (click Roll Chain at its right edge for a new chain)");
+        return;
+    }
     const auto b = fxr::randomChain (diceSeed, bus == fxr::kMasterBus);
     applyBus (b, String ("Rolled ") + fxr::busName (bus) + ": " + chainText (b) + (b.dry > 0.5f ? "  (parallel with dry)" : ""));
 }
@@ -558,8 +608,11 @@ void FxRackPanel::showDestMenu (int b)
 String FxRackPanel::flowText() const
 {
     const float dry = rack.dry (bus);
-    String t (fxr::busName (bus));
-    t << ":  ";
+    String t;
+    if (proc.isFxMorphOn())
+        t << "[FX MORPH ON: you hear the scenes' blend" << (proc.fxEditScene() >= 0 ? ", edits go into scene " + String (proc.fxEditScene() + 1) : String (", store a scene to edit"))
+          << "]   ";
+    t << fxr::busName (bus) << ":  ";
     if (bus == fxr::kMasterBus) t << "everything on output A (channels set to A, and FX buses sent to A)";
     else
     {
@@ -636,6 +689,7 @@ void FxRackPanel::resized()
     modeSel.setBounds (right - 136 - 160, 40, 150, 52);
     chainsBtn.setBounds (760, 26, 132, 28);
     diceBtn.setBounds (760, 64, 132, 28);
+    morphBtn.setBounds (760, 100, 132, 24);
     for (int l = 0; l < fxr::kLanes; ++l)
     {
         auto la = laneArea (l);

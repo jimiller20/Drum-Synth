@@ -13,18 +13,25 @@ static constexpr int kLabelW = 40, kGroupGap = 10;
 
 PatternPanel::PatternPanel (Ferrum8Processor& p) : proc (p)
 {
-    for (auto* b : { &menuBtn, &copyBtn, &pasteBtn, &matrixBtn, &diceBtn, &chainLeft, &chainRight }) addAndMakeVisible (b);
+    for (auto* b : { &menuBtn, &copyBtn, &pasteBtn, &matrixBtn, &diceBtn, &rerollBtn, &chainLeft, &chainRight }) addAndMakeVisible (b);
     menuBtn.setTooltip ("Pattern menu (hold Ctrl for the selected channel only, Shift-click repeats the last item)");
     copyBtn.setTooltip ("Copy pattern (Ctrl: selected channel only)");
     pasteBtn.setTooltip ("Paste pattern");
     matrixBtn.setTooltip ("Matrix editor: all eight channels at once");
-    diceBtn.setTooltip ("Roll new steps for the selected channel in this pattern (uses the Dice style). Shift: the whole beat");
+    diceBtn.setTooltip ("Roll new steps for the selected channel in this pattern (uses the Dice style). Shift: the whole beat. "
+                        "Right-click: let this channel vary its steps by itself every few loops");
+    diceBtn.setPositional (true);
     diceBtn.onClick = [this]
     {
-        const auto msg = ModifierKeys::currentModifiers.isShiftDown() ? proc.rollBeat() : proc.rollChannelSteps (channel);
+        const float amount = diceBtn.clickAmount();
+        const auto msg = ModifierKeys::currentModifiers.isShiftDown() ? proc.rollBeat (amount) : proc.rollChannelSteps (channel, amount);
         if (showStatus) showStatus (msg);
         repaint();
     };
+    diceBtn.onRightClick = [this] { showRerollMenu(); };
+    rerollBtn.setTooltip ("Step variations for the selected channel: re-roll its steps by itself every 1-16 loops, "
+                          "by how much, around the original (Orbit) or wandering away (Drift)");
+    rerollBtn.onClick = [this] { showRerollMenu(); };
     chainLeft.setTooltip ("Chain from the previous pattern");
     chainRight.setTooltip ("Chain to the next pattern");
     matrixBtn.setClickingTogglesState (true);
@@ -56,6 +63,7 @@ PatternPanel::PatternPanel (Ferrum8Processor& p) : proc (p)
     };
     matrix = proc.matrixView;
     matrixBtn.setToggleState (matrix, dontSendNotification);
+    updateDiceButton();
 }
 
 void PatternPanel::setMatrix (bool m)
@@ -74,9 +82,11 @@ void PatternPanel::resized()
     copyBtn.setBounds (toolArea.getX(), toolArea.getY() + 38, 32, 30);
     pasteBtn.setBounds (toolArea.getX(), toolArea.getY() + 74, 32, 30);
     matrixBtn.setBounds (toolArea.getX(), toolArea.getY() + 110, 32, 30);
-    diceBtn.setBounds (toolArea.getX(), toolArea.getY() + 146, 32, 30);
     r.removeFromLeft (12);
     patArea = r.removeFromLeft (4 * 34);
+    // the step dice (positional: where it is clicked sets how many steps change) and its variations menu
+    diceBtn.setBounds (toolArea.getX(), toolArea.getY() + 146, patArea.getRight() - toolArea.getX() - 32, 30);
+    rerollBtn.setBounds (diceBtn.getRight() + 2, diceBtn.getY(), 30, 30);
     chainLeft.setBounds (patArea.getX(), patArea.getY() + 3 * 34 + 6, 4 * 34 / 2 - 2, 28);
     chainRight.setBounds (patArea.getX() + 4 * 34 / 2 + 2, patArea.getY() + 3 * 34 + 6, 4 * 34 / 2 - 4, 28);
     r.removeFromLeft (18);
@@ -143,6 +153,13 @@ void PatternPanel::tick()
     auto& e = proc.getEngine();
     const int step = e.uiStep.load(), pat = e.uiPlayingPattern.load();
     ++blinkPhase;
+    if (proc.stepRerollCount (channel) != lastRerollCount)
+    {
+        lastRerollCount = proc.stepRerollCount (channel);
+        diceBlink = 6;
+        diceBtn.setBlink (true);
+    }
+    else if (diceBlink > 0 && --diceBlink == 0) diceBtn.setBlink (false);
     if (step != shownStep || pat != shownPattern || (blinkPhase % 8) == 0)
     {
         shownStep = step; shownPattern = pat;
@@ -345,10 +362,23 @@ void PatternPanel::paintExpr (Graphics& g, int sel, int len, bool showPlay, int 
         if (used && ! on) { g.setColour (cc); g.fillEllipse (r.getRight() - 9.f, r.getY() + 4.f, 5.f, 5.f); }
     }
     {
+        // positional like every dice: the bar along the bottom fills to the mouse, the label shows the amount
         auto dr = exprDice().toFloat();
         g.setColour (col::raised);
         g.fillRoundedRectangle (dr, 4.f);
-        IconButton::drawIcon (g, IconButton::Icon::Dice, dr.withSizeKeepingCentre (14.f, 14.f), cc);
+        auto bar = dr.reduced (3.f, 0.f).removeFromBottom (3.5f).withTrimmedBottom (1.f);
+        g.setGradientFill (ColourGradient (col::accent.withAlpha (0.1f), bar.getX(), 0.f, col::accent.withAlpha (0.45f), bar.getRight(), 0.f, false));
+        g.fillRect (bar);
+        if (exprDiceHoverX >= 0)
+        {
+            const float a = IconButton::amountAt ((float) exprDiceHoverX - dr.getX(), dr.getWidth());
+            g.setColour (col::accent);
+            g.fillRect (bar.withWidth (jlimit (1.f, bar.getWidth(), (float) exprDiceHoverX - bar.getX())));
+            g.setColour (col::text);
+            g.setFont (font (12.5f, true));
+            g.drawText (IconButton::amountText (a), dr.toNearestInt(), Justification::centred);
+        }
+        else IconButton::drawIcon (g, IconButton::Icon::Dice, dr.withSizeKeepingCentre (14.f, 14.f), cc);
     }
     auto helpR = Rectangle<int> (exprDice().getRight() + 12, exprTab (0).getY(), 0, exprTab (0).getHeight());
     helpR.setRight (laneArea.getRight());
@@ -459,17 +489,90 @@ void PatternPanel::showExprMenu (int step, const ModifierKeys& mods)
     });
 }
 
-void PatternPanel::rollExprLane (bool allChannels)
+void PatternPanel::rollExprLane (bool allChannels, float amount)
 {
     proc.pushUndo();
     const int sel = proc.getSelectedPattern();
-    PatternData d = proc.getPattern (sel);
+    PatternData d = proc.getPattern (sel), fresh = d;
     const auto roles = proc.channelRoles();
+    ChannelMask keep;
+    keep.fill (true);
     for (int ch : targetChannels (allChannels))
-        if (! proc.locked[(size_t) ch]) proc.randomizer.randomizeExpressionLane (d, ch, roles[(size_t) ch], proc.exprLane, 0.5f + proc.dice.expression);
+        if (! proc.locked[(size_t) ch])
+        {
+            proc.randomizer.randomizeExpressionLane (fresh, ch, roles[(size_t) ch], proc.exprLane, 0.5f + proc.dice.expression);
+            keep[(size_t) ch] = false;
+        }
+    // part of the way: only some of the lane's steps take the new values
+    proc.randomizer.blendSteps (d, fresh, amount, keep, proc.exprLane);
     proc.setPattern (sel, d);
-    if (showStatus) showStatus (String ("Rolled the ") + exprInfo (proc.exprLane).name + " lane");
+    if (showStatus) showStatus (String ("Rolled the ") + exprInfo (proc.exprLane).name + " lane"
+                                + (amount < 0.98f ? " by " + IconButton::amountText (amount) : String()));
     repaint();
+}
+
+void PatternPanel::mouseMove (const MouseEvent& e)
+{
+    const int x = (! matrix && exprDice().contains (e.getPosition())) ? e.x : -1;
+    if (x != exprDiceHoverX) { exprDiceHoverX = x; repaint (exprDice()); }
+}
+
+void PatternPanel::mouseExit (const MouseEvent&)
+{
+    if (exprDiceHoverX >= 0) { exprDiceHoverX = -1; repaint (exprDice()); }
+}
+
+void PatternPanel::updateDiceButton()
+{
+    const auto r = proc.getStepReroll (channel);
+    diceBtn.setToggleState (false, dontSendNotification);
+    rerollBtn.setToggleState (r.every > 0, dontSendNotification);
+    diceBtn.setButtonText (r.every > 0 ? "Roll Steps  /" + String (r.every) : "Roll Steps");
+}
+
+void PatternPanel::showRerollMenu()
+{
+    const int ch = channel;
+    const auto r = proc.getStepReroll (ch);
+    PopupMenu m, every, amount;
+    m.addSectionHeader ("STEP VARIATIONS - CHANNEL " + String (ch + 1));
+    every.addItem (100, "Off", true, r.every == 0);
+    for (int i = 1; i < 6; ++i)
+    {
+        const int n = Ferrum8Processor::kRerollEvery[i];
+        every.addItem (100 + n, "Every " + String (n) + (n == 1 ? " Loop" : " Loops"), true, r.every == n);
+    }
+    const int amounts[] = { 5, 10, 25, 50, 75, 100 };
+    for (int a : amounts) amount.addItem (200 + a, String (a) + " % of the steps", true, std::abs (r.amount * 100.f - (float) a) < 0.5f);
+    m.addSubMenu ("Re-roll Steps" + (r.every > 0 ? "  (every " + String (r.every) + ")" : String ("  (off)")), every);
+    m.addSubMenu ("Amount  (" + String (roundToInt (r.amount * 100.f)) + " %)", amount);
+    m.addItem (301, "Orbit: Around The Original Steps", true, r.mode == 0);
+    m.addItem (302, "Drift: Keep Wandering", true, r.mode == 1);
+    m.addSeparator();
+    m.addItem (303, "Back To Original Steps", proc.hasStepRerollHome (ch));
+    m.addItem (304, "Keep These Steps As The Original", proc.hasStepRerollHome (ch));
+    m.addSeparator();
+    m.addItem (305, "Roll Once Now (" + String (roundToInt (r.amount * 100.f)) + " %)");
+    SafePointer<PatternPanel> safe (this);
+    m.showMenuAsync (PopupMenu::Options().withTargetComponent (&diceBtn).withMinimumWidth (240), [safe, ch] (int id)
+    {
+        if (safe == nullptr || id <= 0) return;
+        auto& self = *safe;
+        auto st = self.proc.getStepReroll (ch);
+        String msg;
+        if (id >= 100 && id < 200) { st.every = id - 100; self.proc.setStepReroll (ch, st);
+                                     msg = st.every > 0 ? "Channel " + String (ch + 1) + " re-rolls " + String (roundToInt (st.amount * 100.f)) + " % of its steps every "
+                                                          + String (st.every) + (st.every == 1 ? " loop" : " loops") + " while playing (" + (st.mode == 0 ? "Orbit)" : "Drift)")
+                                                        : "Step variations off for channel " + String (ch + 1); }
+        else if (id >= 200 && id < 300) { st.amount = (float) (id - 200) / 100.f; self.proc.setStepReroll (ch, st); msg = "Step variations: " + String (id - 200) + " % of the steps"; }
+        else if (id == 301 || id == 302) { st.mode = id - 301; self.proc.setStepReroll (ch, st); msg = id == 301 ? "Orbit: each variation starts from the original steps" : "Drift: each variation starts from the last one"; }
+        else if (id == 303) { self.proc.pushUndo(); self.proc.restoreStepRerollHome (ch); msg = "Channel " + String (ch + 1) + " back to its original steps"; }
+        else if (id == 304) { self.proc.keepStepRerollHome (ch); msg = "These steps are now the original for channel " + String (ch + 1); }
+        else if (id == 305) msg = self.proc.rollChannelSteps (ch, st.amount);
+        self.updateDiceButton();
+        self.repaint();
+        if (self.showStatus && msg.isNotEmpty()) self.showStatus (msg);
+    });
 }
 
 String PatternPanel::getTooltip()
@@ -478,7 +581,8 @@ String PatternPanel::getTooltip()
     const auto pos = getMouseXYRelative();
     for (int l = 0; l < kNumExpr; ++l)
         if (exprTab (l).contains (pos)) return exprInfo (l).help;
-    if (exprDice().contains (pos)) return String ("Roll this ") + exprInfo (proc.exprLane).name + " lane for the selected channel (Shift: every unmuted channel)";
+    if (exprDice().contains (pos)) return String ("Roll this ") + exprInfo (proc.exprLane).name + " lane for the selected channel (Shift: every unmuted channel). "
+                                          "Where you click sets how much: left ~1 % ... right edge 100 %";
     for (int s = 0; s < kMaxSteps; ++s)
         if (laneCell (Expr, s).contains (pos))
             return String (exprInfo (proc.exprLane).name) + ": drag up / down to draw values across steps, double-click resets, "
@@ -533,7 +637,11 @@ void PatternPanel::mouseDown (const MouseEvent& e)
     {
         for (int l = 0; l < kNumExpr; ++l)
             if (exprTab (l).contains (pos)) { proc.exprLane = l; repaint(); return; }
-        if (exprDice().contains (pos)) { rollExprLane (e.mods.isShiftDown()); return; }
+        if (exprDice().contains (pos))
+        {
+            rollExprLane (e.mods.isShiftDown(), IconButton::amountAt ((float) (pos.x - exprDice().getX()), (float) exprDice().getWidth()));
+            return;
+        }
         for (int s = 0; s < kMaxSteps; ++s)
             if (laneCell (Expr, s).expanded (3, 3).contains (pos))
             {

@@ -101,6 +101,7 @@ Toolbar::Toolbar (Ferrum8Processor& p) : proc (p)
     soundsBtn.setTooltip ("Randomize Sounds: new drum sounds on every unlocked channel, the patterns stay");
     beatBtn.setTooltip ("Randomize Beat: new steps for every unlocked channel, the sounds stay (style, density ... in the Dice menu)");
     allBtn.setTooltip ("Randomize All: new sounds and patterns A-L");
+    for (auto* b : { &soundsBtn, &beatBtn, &allBtn }) b->setPositional (true);
     diceMenuBtn.setTooltip ("Dice settings: beat style, density, complexity, kit character, key, Evolve, roll history");
     undoBtn.onClick = [this] { proc.undo(); };
     redoBtn.onClick = [this] { proc.redo(); };
@@ -273,8 +274,9 @@ void ChannelStrip::paint (Graphics& g)
         String info = String (kModelNames[(int) m]).toUpperCase();
         if (proc.getPatchValue (ch, P_CHOKE) > 0.5f) info << "  CHOKE";
         const int out = choiceIndex (proc.getPatchValue (ch, P_OUTPUT), paramDef (P_OUTPUT).numChoices);
-        if (out == 1) info << "  OUT B"; else if (out == 2) info << "  > FX 1"; else if (out == 3) info << "  > FX 2"; else if (out == 4) info << "  > OWN";
+        if (out == 1) info << "  OUT B"; else if (out == 2) info << "  > FX 1"; else if (out == 3) info << "  > FX 2"; else if (out == 4) info << "  > CH " << (ch + 1) << " OUT";
         if (proc.getSoundMutation (ch).every > 0) info << "  ~MUT";
+        if (proc.getStepReroll (ch).every > 0) info << "  ~VAR";
         g.drawFittedText (info, t.withTrimmedTop (t.getHeight() / 2 + 1), Justification::topLeft, 1, 0.8f);
 
         auto mb = muteButton (ch).toFloat();
@@ -337,10 +339,11 @@ void ChannelStrip::mouseDown (const MouseEvent& e)
 }
 
 //==============================================================================================
-GlobalPanel::GlobalPanel (Ferrum8Processor& p) : proc (p)
+GlobalPanel::GlobalPanel (Ferrum8Processor& p) : proc (p), morphPad (p, true)
 {
-    for (auto* c : std::initializer_list<Component*> { &stopBtn, &playBtn, &rate, &swing, &fillRate, &tempo, &master })
+    for (auto* c : std::initializer_list<Component*> { &stopBtn, &playBtn, &rate, &swing, &fillRate, &tempo, &master, &morphPad })
         addAndMakeVisible (c);
+    morphPad.onOpenPanel = [this] { if (onOpenFxMorph) onOpenFxMorph(); };
 
     stopBtn.setTooltip ("Stop the pattern engine at the end of the pattern (click again: stop now)");
     playBtn.setTooltip ("Start the pattern engine in sync with the host (click again: start now)");
@@ -365,6 +368,7 @@ GlobalPanel::GlobalPanel (Ferrum8Processor& p) : proc (p)
 
 void GlobalPanel::tick()
 {
+    morphPad.tick();
     const int state = proc.getEngine().uiState.load();
     ++blink;
     const bool on = (blink / 8) % 2 == 0;
@@ -385,8 +389,14 @@ void GlobalPanel::tick()
 Rectangle<int> GlobalPanel::busCard (int b) const
 {
     auto r = fxArea.reduced (8, 0).withTrimmedTop (24).withTrimmedBottom (8);
+    r.removeFromRight (124);                 // the FX Morph pad
     const int w = (r.getWidth() - 2 * 6) / 3;
     return { r.getX() + b * (w + 6), r.getY(), w, r.getHeight() };
+}
+
+Rectangle<int> GlobalPanel::morphCard() const
+{
+    return fxArea.reduced (8, 0).withTrimmedTop (24).withTrimmedBottom (8).removeFromRight (118);
 }
 
 void GlobalPanel::resized()
@@ -408,6 +418,7 @@ void GlobalPanel::resized()
     master.setBounds (masterArea.withTrimmedTop (20).withHeight (68).withSizeKeepingCentre (70, 68));
     r.removeFromRight (12);
     fxArea = r;
+    morphPad.setBounds (morphCard());
 }
 
 void GlobalPanel::mouseDown (const MouseEvent& e)

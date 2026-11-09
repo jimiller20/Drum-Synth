@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include "Controls.h"
+#include "FxMorph.h"
 #include "../PluginProcessor.h"
 
 namespace ui
@@ -88,11 +89,15 @@ public:
     void mouseExit (const juce::MouseEvent&) override;
     std::function<void()> onPlay, onStop;
     std::function<void (int)> onOpenFx;   // a bus card was clicked: show the FX tab on that bus
+    std::function<void()> onOpenFxMorph;  // the FX Morph pad's title was clicked
+    FxMorphPad& getMorphPad() { return morphPad; }
 
 private:
     juce::Rectangle<int> busCard (int b) const;
+    juce::Rectangle<int> morphCard() const;
     Ferrum8Processor& proc;
     IconButton stopBtn { IconButton::Icon::Stop }, playBtn { IconButton::Icon::Play };
+    FxMorphPad morphPad;
     Segmented rate;
     Knob swing, fillRate, tempo, master;
     int blink = 0, hoverCard = -1;

@@ -406,6 +406,21 @@ float Randomizer::hitLoudness (const Patch& p)
     return (float) (-0.691 + 10.0 * std::log10 (e / (double) w + 1e-12));
 }
 
+float Randomizer::matchLoudness (Patch& p, float ref, float lo, float hi)
+{
+    float now = hitLoudness (p);
+    for (int it = 0; it < 4 && now > -90.f; ++it)
+    {
+        const float err = ref - now;
+        if (std::abs (err) < 0.3f) break;
+        const float lvl = std::clamp (p[P_LEVEL] * std::pow (10.f, std::clamp (err, -18.f, 18.f) / 20.f), lo, hi);
+        if (std::abs (lvl - p[P_LEVEL]) < 1e-4f) break;   // at a limit
+        p[P_LEVEL] = lvl;
+        now = hitLoudness (p);
+    }
+    return now;
+}
+
 // Cymbals sit about 10 dB under a typical snare (around -25 LUFS for a full-velocity hit), so
 // their level is set from a measured hit rather than guessed from the recipe.
 void Randomizer::fitCymbalLevel (Patch& p)
@@ -620,7 +635,7 @@ void Randomizer::applyGenre (Patch& p, Flavor f, Genre g)
     }
 }
 
-Patch Randomizer::mutateSound (const Patch& base, float depth)
+Patch Randomizer::mutateSound (const Patch& base, float depth, int key)
 {
     Patch p = base;
     depth = std::clamp (depth, 0.f, 1.f);
@@ -630,8 +645,29 @@ Patch Randomizer::mutateSound (const Patch& base, float depth)
     {
         p[(size_t) id] = std::clamp (p[(size_t) id] + uni (-1.f, 1.f) * range * depth, lo, hi);
     };
-    nudge (P_OSC_COARSE, (metal ? 1.5f : 2.0f) / 127.f);   // semitones
-    nudge (P_OSC_FINE, 0.12f);
+    const bool pitched = m == Model::Drum || m == Model::Snare;
+    if (key >= 0 && pitched)
+    {
+        // in key: tune to the scale, then maybe step one scale note up or down
+        tuneToKey (p, key);
+        if (chance (depth * 0.6f))
+        {
+            const int dir = chance (0.5f) ? 1 : -1;
+            const int note = (int) std::lround (p[P_OSC_COARSE] * 127.f);
+            for (int n = note + dir; n >= 0 && n <= 127 && std::abs (n - note) <= 5; n += dir)
+            {
+                Patch q = p;
+                q[P_OSC_COARSE] = (float) n / 127.f;
+                tuneToKey (q, key);
+                if (std::lround (q[P_OSC_COARSE] * 127.f) == n) { p = q; break; }
+            }
+        }
+    }
+    else
+    {
+        nudge (P_OSC_COARSE, (metal ? 1.5f : 2.0f) / 127.f);   // semitones
+        nudge (P_OSC_FINE, 0.12f);
+    }
     nudge (P_MOD_COARSE, (metal ? 1.2f : 3.0f) / 127.f);   // carrier : modulator ratio drifts
     nudge (P_MOD2_COARSE, (metal ? 1.2f : 3.0f) / 127.f);
     nudge (P_MOD_GAIN, 0.14f);
@@ -651,8 +687,7 @@ Patch Randomizer::mutateSound (const Patch& base, float depth)
     nudge (P_ATTACK, 0.02f);
     if (base[P_DECIMATE] < 0.99f) nudge (P_DECIMATE, 0.08f);
     if (chance (depth * 0.12f)) p[P_TRANS_WAVE] = choiceValue (irange (0, paramDef (P_TRANS_WAVE).numChoices - 1), paramDef (P_TRANS_WAVE).numChoices);
-    if (m == Model::Cymbal) fitCymbalLevel (p); // a mutated cymbal never jumps out of the mix
-    return p;
+    return p; // the caller keeps the loudness even (see Ferrum8Processor::mutateSoundNow)
 }
 
 Patch Randomizer::alter (const Patch& in, float amount)
@@ -673,6 +708,66 @@ Patch Randomizer::alter (const Patch& in, float amount)
         }
     }
     return p;
+}
+
+Patch Randomizer::blendToward (const Patch& cur, const Patch& target, float amount)
+{
+    amount = std::clamp (amount, 0.f, 1.f);
+    if (amount >= 0.98f) return target;
+    Patch p = cur;
+    for (int i = 0; i < NUM_PATCH_PARAMS; ++i)
+    {
+        const auto& d = paramDef (i);
+        if (i == P_OUTPUT || i == P_CHOKE) continue;          // routing is never rolled
+        if (d.numChoices > 0)
+        {
+            if (i != P_MODEL && chance (amount * amount)) p[(size_t) i] = target[(size_t) i];
+        }
+        else
+            p[(size_t) i] = cur[(size_t) i] + (target[(size_t) i] - cur[(size_t) i]) * amount;
+    }
+    return p;
+}
+
+void Randomizer::blendSteps (PatternData& cur, const PatternData& fresh, float amount, const ChannelMask& keep, int lane)
+{
+    amount = std::clamp (amount, 0.f, 1.f);
+    const int n = std::max (1, cur.length);
+    auto stepOf = [] (const PatternData& d, int c, int s, int ln)
+    {
+        std::array<int, 3 + kNumExpr> v {};
+        if (ln < 0)
+        {
+            v[0] = (d.trig[(size_t) c] >> s) & 1; v[1] = (d.acc[(size_t) c] >> s) & 1; v[2] = (d.fill[(size_t) c] >> s) & 1;
+            for (int l = 0; l < kNumExpr; ++l) v[(size_t) (3 + l)] = d.expr[(size_t) c][(size_t) l][(size_t) s];
+        }
+        else v[0] = d.expr[(size_t) c][(size_t) ln][(size_t) s];
+        return v;
+    };
+    std::vector<std::pair<int, int>> diff;
+    for (int c = 0; c < kNumChannels; ++c)
+    {
+        if (keep[(size_t) c]) continue;
+        for (int s = 0; s < n; ++s)
+            if (stepOf (cur, c, s, lane) != stepOf (fresh, c, s, lane)) diff.push_back ({ c, s });
+    }
+    if (diff.empty()) return;
+    const int take = amount >= 0.98f ? (int) diff.size()
+                                     : std::clamp ((int) std::lround (amount * (float) diff.size()), 1, (int) diff.size());
+    std::shuffle (diff.begin(), diff.end(), rng);
+    for (int i = 0; i < take; ++i)
+    {
+        const int c = diff[(size_t) i].first, s = diff[(size_t) i].second;
+        if (lane < 0)
+        {
+            auto bit = [&] (uint16_t& v, uint16_t src) { const uint16_t m = (uint16_t) (1u << s); v = (uint16_t) ((v & ~m) | (src & m)); };
+            bit (cur.trig[(size_t) c], fresh.trig[(size_t) c]);
+            bit (cur.acc[(size_t) c], fresh.acc[(size_t) c]);
+            bit (cur.fill[(size_t) c], fresh.fill[(size_t) c]);
+            for (int l = 0; l < kNumExpr; ++l) cur.expr[(size_t) c][(size_t) l][(size_t) s] = fresh.expr[(size_t) c][(size_t) l][(size_t) s];
+        }
+        else cur.expr[(size_t) c][(size_t) lane][(size_t) s] = fresh.expr[(size_t) c][(size_t) lane][(size_t) s];
+    }
 }
 
 //---------------------------------------------------------------------------------------------

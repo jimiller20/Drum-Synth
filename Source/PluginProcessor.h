@@ -58,6 +58,8 @@ public:
     int activeEnd() const { return getMorph() < 0.5f ? 0 : 1; }
     ferrum::Patch getActiveEnd (int ch) const { return activeEnd() == 0 ? getEndA (ch) : getEndB (ch); }
     int setPatchAtActiveEnd (int ch, const ferrum::Patch& p);
+    // multi-out: every channel to its own plugin output (Ch 1-8), or every channel back to A
+    void routeAllChannels (bool ownOutputs);
     static juce::String endName (int e) { return e == 0 ? "A" : (e == 1 ? "B" : "A + B"); }
     void swapMorphEnds();
     float getMorph() const;
@@ -94,7 +96,7 @@ public:
     static constexpr int kMutateEvery[6] = { 0, 1, 2, 4, 8, 16 };
     SoundMutation getSoundMutation (int ch) const { return soundMut[(size_t) ch]; }
     void setSoundMutation (int ch, const SoundMutation& m);
-    void mutateSoundNow (int ch);          // one mutation step right away
+    void mutateSoundNow (int ch, float depth = -1.f); // one mutation step right away (depth < 0: the channel's depth)
     void keepMutationHome (int ch);        // the current sound becomes the home Orbit returns to
     void restoreMutationHome (int ch);     // back to the home sound
     uint32_t mutationCount (int ch) const { return mutCount[(size_t) ch]; }
@@ -109,7 +111,27 @@ public:
 
     // FX rack (edited from the FX tab; call pushUndo() before a change, rackChanged() after it)
     ferrum::fx::FxRack& getRack() { return engine.rack; }
-    void rackChanged() { presetDirty = true; sendUiChange(); }
+    void rackChanged() { presetDirty = true; fxRackEdited(); sendUiChange(); }
+
+    // FX Morph (see FxRack.h): four scenes of the rack's modules in the corners of an XY pad (host
+    // parameters "FX Morph X" / "FX Morph Y"). Dry, Out, lane levels and bus outputs are not part
+    // of a scene. With Morph on, edits on the FX tab go into the edit scene (the one last stored or
+    // recalled), so what you change is what you hear.
+    static constexpr int kFxScenes = ferrum::fx::FxRack::kScenes;
+    bool fxSceneUsed (int i) const { return fxScenesUsed[(size_t) i]; }
+    const ferrum::fx::RackState& getFxScene (int i) const { return fxScenes[(size_t) i]; }
+    juce::String fxSceneSummary (int i) const;   // its modules in words
+    void storeFxScene (int i);                    // the rack's modules into scene i (it becomes the edit scene)
+    void recallFxScene (int i);                   // scene i's modules into the rack (it becomes the edit scene)
+    void clearFxScene (int i);
+    void setFxMorphOn (bool on);
+    bool isFxMorphOn() const { return fxMorphOn; }
+    int fxEditScene() const { return fxEdit; }
+    void fxRackEdited();                          // the FX tab changed the rack (Morph on: into the edit scene)
+    float fxMorphX() const { return pFxX->load(); }
+    float fxMorphY() const { return pFxY->load(); }
+    void setFxMorphXY (float x, float y);         // from the pad (host parameters, with gestures)
+    void fxMorphGesture (bool start);
 
     // channel / pattern operations
     void moveChannel (int from, int to);
@@ -140,11 +162,25 @@ public:
     // roll history so an earlier result can be brought back
     ferrum::DiceSettings dice;              // change dice.evolve through setEvolve()
     std::array<bool, NC> locked {};         // locked channels keep their sound and their steps
-    juce::String rollSounds();              // new sounds, same patterns (returns a status text)
-    juce::String rollBeat();                // new steps, same sounds: selected pattern or A-L
-    juce::String rollAll();                 // both
-    juce::String rollChannelSteps (int ch); // one channel's steps in the selected pattern
-    juce::String rollMorphTargets();        // random B ends for every unlocked channel
+    // amount 0.01..1: how far each roll goes (the dice buttons pass where they were clicked);
+    // 1 = a completely new roll, less moves the current sounds / steps part of the way there
+    juce::String rollSounds (float amount = 1.f);              // new sounds, same patterns (returns a status text)
+    juce::String rollBeat (float amount = 1.f);                // new steps, same sounds: selected pattern or A-L
+    juce::String rollAll (float amount = 1.f);                 // both
+    juce::String rollChannelSteps (int ch, float amount = 1.f); // one channel's steps in the selected pattern
+    juce::String rollMorphTargets (float amount = 1.f);        // random B ends for every unlocked channel
+
+    // Per-channel step variations: a channel re-rolls its own steps in the playing pattern every N
+    // loops (amount = share of the steps that change). Orbit starts from the original steps each time,
+    // Drift from the last variation.
+    struct StepReroll { int every = 0; float amount = 0.25f; int mode = 0; };   // every: loops, 0 = off
+    static constexpr int kRerollEvery[6] = { 0, 1, 2, 4, 8, 16 };
+    StepReroll getStepReroll (int ch) const { return stepReroll[(size_t) ch]; }
+    void setStepReroll (int ch, const StepReroll& r);
+    void restoreStepRerollHome (int ch);    // the channel's original steps in every pattern
+    void keepStepRerollHome (int ch);       // the current steps become the original
+    bool hasStepRerollHome (int ch) const;
+    uint32_t stepRerollCount (int ch) const { return rerollCount[(size_t) ch]; }
     struct Roll { juce::String label, state; juce::Time when; };
     const std::vector<Roll>& getRollHistory() const { return rollHistory; }
     void restoreRoll (int index);
@@ -183,6 +219,12 @@ private:
     std::array<std::atomic<float>*, NC> pMute {};
     std::array<std::atomic<float>*, ferrum::mod::kMods> pMacro {};
     std::array<ferrum::mod::ModState, ferrum::mod::kMods> modStates {};
+    void publishFxMorph();
+    std::array<ferrum::fx::RackState, kFxScenes> fxScenes {};
+    std::array<bool, kFxScenes> fxScenesUsed {};
+    bool fxMorphOn = false;
+    int fxEdit = -1;
+    std::atomic<float>* pFxX = nullptr, *pFxY = nullptr;
 
     std::atomic<int> midiLaunch { 0 }, midiPitched { 0 }, midiNoteOff { 0 }, midiTransmit { 1 }, midiBend { 12 };
 
@@ -193,8 +235,16 @@ private:
     std::array<SoundMutation, NC> soundMut {};
     std::array<ferrum::Patch, NC> mutHome {};
     std::array<bool, NC> mutHomeSet {};
+    std::array<float, NC> mutHomeLoud {};   // measured loudness of the home sound (LUFS), 1e9 = not measured yet
     std::array<int, NC> mutLoops {};
     std::array<uint32_t, NC> mutCount {};
+    void stepRerollTick (int loops);
+    int blendSounds (float amount);
+    void blendBeat (float amount, bool allPatterns, const std::array<ferrum::Flavor, NC>& roles, const ferrum::ChannelMask& keep);
+    std::array<StepReroll, NC> stepReroll {};
+    std::array<std::array<std::optional<ferrum::PatternData::Channel>, ferrum::kNumPatterns>, NC> rerollHome {};
+    std::array<int, NC> rerollLoops {};
+    std::array<uint32_t, NC> rerollCount {};
     bool mutating = false;
     std::vector<Roll> rollHistory;
     std::array<std::optional<ferrum::PatternData>, ferrum::kNumPatterns> evolveHome;

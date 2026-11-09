@@ -72,7 +72,10 @@ set(FERRUM_SOURCES
     Source/ui/TopPanels.cpp
     Source/ui/DicePanel.cpp
     Source/ui/FxRackPanel.cpp
-    Source/ui/ModPanel.cpp)
+    Source/ui/ModPanel.cpp
+    Source/ui/Tutorial.cpp
+    Source/ui/ModStrip.cpp
+    Source/ui/FxMorph.cpp)
 target_sources(Ferrum8 PRIVATE ${FERRUM_SOURCES})
 
 target_compile_definitions(Ferrum8 PUBLIC

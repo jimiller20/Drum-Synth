@@ -8,7 +8,7 @@ namespace ui
 {
 // A rotary knob. Drag up/down (Shift = fine), Ctrl/Cmd-click or double-click = default,
 // right-click = menu with "Enter value" and "Reset", mouse wheel nudges.
-class Knob : public juce::Component, public juce::SettableTooltipClient
+class Knob : public juce::Component, public juce::SettableTooltipClient, public juce::DragAndDropTarget
 {
 public:
     Knob();
@@ -40,6 +40,13 @@ public:
     std::function<void (juce::PopupMenu&)> extendMenu;
     std::function<void (int)> onExtendedMenu;
     void setInactive (bool b) { inactive = b; repaint(); }
+    // a modulator dragged from the MOD strip ("ferrum-mod:<n>") and dropped here; set by panels whose
+    // knobs can be modulated
+    std::function<void (int modulator)> onModDrop;
+    bool isInterestedInDragSource (const SourceDetails&) override;
+    void itemDragEnter (const SourceDetails&) override { dropHover = true; repaint(); }
+    void itemDragExit (const SourceDetails&) override { dropHover = false; repaint(); }
+    void itemDropped (const SourceDetails&) override;
 
     std::function<void()> onGestureStart;
     std::function<void (float)> onUserDelta;              // normalised delta from the user (Edit All)
@@ -65,7 +72,7 @@ private:
     float modRange = 0.f;
     float norm = 0.f, dragStartNorm = 0.f, accumDrag = 0.f;
     int lastY = 0;
-    bool dragging = false, hover = false, bipolar = false, inactive = false;
+    bool dragging = false, hover = false, bipolar = false, inactive = false, dropHover = false;
     juce::String label;
     juce::Colour accent = col::accent;
 };
@@ -82,6 +89,8 @@ public:
     // free mode: a list that is not a host parameter (setIndex() updates the display)
     void bindFree (const juce::String& name, const juce::StringArray& choices, int index);
     void setIndex (int i) { index = i; repaint(); }
+    // shown instead of the parameter's own choice names (same count and order)
+    void setDisplayNames (const juce::StringArray& n) { displayNames = n; repaint(); }
     void setLabel (const juce::String& l) { label = l; repaint(); }
     void setStyle (Style s) { style = s; repaint(); }
     void setAccent (juce::Colour c) { accent = c; repaint(); }
@@ -102,7 +111,7 @@ private:
     juce::RangedAudioParameter* param = nullptr;
     std::unique_ptr<juce::ParameterAttachment> att;
     juce::String freeName;
-    juce::StringArray freeChoices;
+    juce::StringArray freeChoices, displayNames;
     int index = 0, dragStartIndex = 0;
     bool dragged = false, inactive = false;
     float wheelAccum = 0.f;
@@ -152,9 +161,28 @@ public:
     void paintButton (juce::Graphics&, bool over, bool down) override;
     static void drawIcon (juce::Graphics&, Icon, juce::Rectangle<float>, juce::Colour);
 
+    // Positional dice: where the button is clicked sets how much it changes, from ~1 % at the left
+    // edge to 100 % at the right edge (the last 8 % of the width is a full 100 %). The amount is shown
+    // while hovering; read it in onClick with clickAmount().
+    void setPositional (bool p) { positional = p; repaint(); }
+    bool isPositional() const { return positional; }
+    float clickAmount() const { return amount; }
+    static float amountAt (float x, float width);
+    static juce::String amountText (float a) { return juce::String (juce::roundToInt (a * 100.f)) + " %"; }
+    // right-click: called instead of a click (for buttons with a settings menu)
+    std::function<void()> onRightClick;
+
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override;
+    juce::String getTooltip() override;
+
 private:
     Icon icon;
     juce::Colour accent = col::accent;
-    bool blink = false;
+    bool blink = false, positional = false, rightDown = false;
+    float amount = 1.f, hoverX = -1.f;
 };
 } // namespace ui

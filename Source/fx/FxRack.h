@@ -90,7 +90,56 @@ public:
 
     void reset(); // clears tails (audio stopped)
 
+    // ---- FX Morph ------------------------------------------------------------------------------
+    // Four scenes of module settings in the corners of an XY pad: 0 top left, 1 top right, 2 bottom
+    // left, 3 bottom right. While Morph is on, the rack plays its morph instances - one per module
+    // type a slot holds in any scene - instead of its own modules: settings blend by the XY weights
+    // (bilinear), and each module fades in and out with the share of the weight of the scenes that
+    // hold it (unbypassed), so effects come and go between scenes. Dry, Out, lane levels and each
+    // bus's output stay the rack's own. Everything is blended on the audio thread, so automation and
+    // offline renders follow it exactly.
+    static constexpr int kScenes = 4;
+    // message thread: new scenes (instances are created here; unchanged module types keep theirs)
+    void setMorphScenes (const std::array<bool, kScenes>& used, const std::array<RackState, kScenes>& scenes);
+    void setMorphOn (bool on) { morphOn.store (on); }
+    void setMorphXY (float x, float y) { morphX.store (x); morphY.store (y); }
+    bool isMorphOn() const { return morphOn.load(); }
+    static std::array<float, kScenes> morphWeights (float x, float y, const std::array<bool, kScenes>& used);
+
 private:
+    // the morph instances of every slot, handed to the audio thread as one object (a Module only so
+    // the garbage queue can delete it on the message thread)
+    struct MorphSet : Module
+    {
+        struct SlotSet
+        {
+            std::array<Module*, kScenes> inst {};
+            std::array<Type, kScenes> type {};
+            std::array<int, kScenes> reuse { -1, -1, -1, -1 };   // take instance j of the previous set
+            std::array<float, kScenes> smooth {};                // presence, audio thread
+            int count = 0;
+        };
+        std::array<std::array<std::array<SlotSet, kSlots>, kLanes>, kBuses> slots {};
+        ~MorphSet() override { for (auto& b : slots) for (auto& l : b) for (auto& s : l) for (auto* m : s.inst) delete m; }
+        void prepare (double) override {}
+        void reset() override {}
+        void process (float*, float*, int, const float*) override {}
+    };
+    void adoptMorph();                                           // audio thread
+    void processMorphSlot (MorphSet::SlotSet& ms, int bus, int lane, int slot, const std::array<float, kScenes>& w,
+                           float* L, float* R, int n);           // audio thread
+    std::atomic<Module*> pendingMorph { nullptr };
+    MorphSet* morph = nullptr;                                   // audio thread
+    std::array<std::array<std::array<std::array<Type, kScenes>, kSlots>, kLanes>, kBuses> pubTypes {}; // message thread mirror
+    std::array<std::array<std::array<int, kSlots>, kLanes>, kBuses> pubCount {};
+    std::atomic<float> sceneP[kScenes][kBuses][kLanes][kSlots][kMaxParams];
+    std::atomic<int> sceneType[kScenes][kBuses][kLanes][kSlots];
+    std::atomic<bool> sceneBypass[kScenes][kBuses][kLanes][kSlots];
+    std::atomic<bool> sceneUsed[kScenes];
+    std::atomic<bool> morphOn { false };
+    std::atomic<float> morphX { 0.f }, morphY { 0.f };
+    std::vector<float> dryL, dryR, tmpL, tmpR, mixL, mixR;
+
     struct Slot
     {
         std::atomic<float> params[kMaxParams];

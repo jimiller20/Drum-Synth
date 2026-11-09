@@ -11,7 +11,8 @@ class PatternPanel : public juce::Component, public juce::TooltipClient
 {
 public:
     explicit PatternPanel (Ferrum8Processor& p);
-    void setChannel (int ch) { channel = ch; repaint(); }
+    void setChannel (int ch) { channel = ch; updateDiceButton(); repaint(); }
+    void updateDiceButton();                         // shows the channel's step-variation setting
     void setMatrix (bool m);
     bool isMatrix() const { return matrix; }
     void tick();                                     // called by the editor timer
@@ -26,6 +27,8 @@ public:
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override;
     juce::String getTooltip() override;
 
 private:
@@ -33,8 +36,10 @@ private:
     juce::Rectangle<int> patternButton (int p) const;
     juce::Rectangle<int> laneCell (int lane, int step) const;
     juce::Rectangle<int> exprTab (int lane) const;
-    juce::Rectangle<int> exprDice() const { auto t = exprTab (ferrum::kNumExpr - 1); return t.withX (t.getRight() + 6).withWidth (t.getHeight() + 6); }
-    void rollExprLane (bool allChannels);
+    // the expression-lane dice is positional too (wide enough to pick an amount)
+    juce::Rectangle<int> exprDice() const { auto t = exprTab (ferrum::kNumExpr - 1); return t.withX (t.getRight() + 6).withWidth (58); }
+    void showRerollMenu();                           // per-channel step variations (right-click on the step dice)
+    void rollExprLane (bool allChannels, float amount = 1.f);
     int exprValueFromY (const juce::Rectangle<int>& cell, int y) const;
     void editExpr (int step, int value, const juce::ModifierKeys& mods);
     void showExprMenu (int step, const juce::ModifierKeys& mods);
@@ -51,7 +56,8 @@ private:
     int channel = 0;
     bool matrix = false;
     IconButton menuBtn { IconButton::Icon::Menu }, copyBtn { IconButton::Icon::Copy }, pasteBtn { IconButton::Icon::Paste },
-               matrixBtn { IconButton::Icon::Matrix }, diceBtn { IconButton::Icon::Dice }, chainLeft { IconButton::Icon::ChainLeft }, chainRight { IconButton::Icon::ChainRight };
+               matrixBtn { IconButton::Icon::Matrix }, diceBtn { IconButton::Icon::Dice, "Roll Steps" },
+               rerollBtn { IconButton::Icon::Down }, chainLeft { IconButton::Icon::ChainLeft }, chainRight { IconButton::Icon::ChainRight };
     juce::Rectangle<int> toolArea, patArea, laneArea;
 
     // drag state
@@ -61,6 +67,8 @@ private:
     int lastMenuItem = 0;
     bool lastMenuChannelOnly = false;
     int shownStep = -2, shownPattern = -1, blinkPhase = 0;
+    int exprDiceHoverX = -1, diceBlink = 0;
+    uint32_t lastRerollCount = 0;
     std::unique_ptr<juce::FileChooser> chooser;
 };
 } // namespace ui

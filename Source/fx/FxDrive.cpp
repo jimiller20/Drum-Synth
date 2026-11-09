@@ -75,6 +75,7 @@ public:
         {
             c.os.reset(); c.dry.reset(); c.dc.reset(); c.svf.reset();
             c.fbState = c.fbHpX = c.fbHpY = c.fbLp = 0.f;
+            c.fbRes.reset();
             c.pre1.reset(); c.pre2.reset(); c.post1.reset(); c.post2.reset(); c.env.reset(); c.slow.reset();
             c.slew = 0; c.tilt.split.reset();
         }
@@ -124,6 +125,7 @@ private:
         LatencyDelay dry;
         DcBlocker dc;
         float fbState = 0, fbHpX = 0, fbHpY = 0, fbLp = 0; // the analog-style feedback loop
+        Svf fbRes;                                         // its resonance (feedback above 80 %)
         Svf svf;
         Biquad pre1, pre2, post1, post2;
         Envelope env, slow;
@@ -146,7 +148,14 @@ private:
         s.fbHpX = y;
         s.fbHpY = flush (hp);
         s.fbLp = flush (s.fbLp + loopLpA * (hp - s.fbLp));
-        s.fbState = tanhFast (s.fbLp * 1.25f) * 0.8f;
+        float loop = s.fbLp;
+        if (resMix > 0.f) // above 80 % feedback: part of the loop goes through a resonant band-pass
+        {
+            float lp, bp, hpo;
+            s.fbRes.tick (loop, lp, bp, hpo);
+            loop = (1.f - resMix) * loop + resMix * bp * resNorm; // unity at the peak: loop gain stays below 1
+        }
+        s.fbState = tanhFast (loop * 1.25f) * 0.8f;
         return y;
     }
     float curve (float x, Chan& s) const
@@ -192,6 +201,10 @@ private:
         const float fb = p[kFeedback];
         loopGain = 0.9f * std::pow (fb, 0.85f) / slope0[preamp];
         fbMakeup = 1.f / (1.f + 0.45f * fb);  // positive feedback adds gain: keep the level close
+        // Above 80 % a little resonance comes through: up to 40 % of the loop passes a band-pass (Q ~ 4)
+        // tuned by Cutoff. Its peak gain is 1, so the loop gain at that frequency stays at loopGain (< 1):
+        // the band rings and sings, the rest of the loop gets less, nothing runs away.
+        resMix = 0.4f * std::clamp ((fb - 0.8f) / 0.2f, 0.f, 1.f);
         mixAmt = p[kMix];
         const double fc = val (T, p, kCutoff);
         const float res = p[kReso];
@@ -208,6 +221,7 @@ private:
                 default: c.pre1.peak (sr, 1200, 0.8, 4); c.pre2.highpass (sr, 60, 0.7); c.post1.lowpass (sr, 8000, 0.7); c.post2.bypass(); break;
             }
             c.svf.set (sr, fc, res);
+            c.fbRes.set (2.0 * sr, std::clamp (fc, 150.0, 6000.0), 0.88f);
             c.tilt.set (sr, 800, val (T, p, kTilt));
             c.env.set (sr, 1.0, 60.0);
             c.slow.set (sr, 30.0, 250.0);
@@ -217,6 +231,7 @@ private:
     ParamCache cache;
     int preamp = 0, filterMode = 0;
     float drive = 1, makeup = 1, loopGain = 0, fbMakeup = 1, loopHpA = 0.99f, loopLpA = 0.3f, mixAmt = 1, bpGain = 1;
+    float resMix = 0, resNorm = 2.f - 1.96f * 0.88f; // band-pass output * k = unity at the peak
 };
 
 //=============================================================================================

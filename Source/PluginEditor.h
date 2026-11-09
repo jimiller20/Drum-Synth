@@ -11,6 +11,8 @@
 #include "ui/DicePanel.h"
 #include "ui/FxRackPanel.h"
 #include "ui/ModPanel.h"
+#include "ui/Tutorial.h"
+#include "ui/FxMorph.h"
 
 class Ferrum8Editor : public juce::AudioProcessorEditor,
                       public juce::DragAndDropContainer,
@@ -39,6 +41,9 @@ public:
     int getTab() const { return tab; }
     ui::FxRackPanel& getFxPanel() { return fxPanel; }
     ui::ModPanel& getModPanel() { return modPanel; }
+    void showTutorial (int page);     // the tour (first run, Main menu > Show Tutorial)
+    bool tutorialShowing() const { return tutorial != nullptr; }
+    static inline bool autoTutorial = true;   // first-run tour (the tests switch it off)
 private:
 
     void timerCallback() override;
@@ -57,8 +62,11 @@ private:
     void status (const juce::String& s);
     void pressPlay();
     void pressStop();
-    void randomizeAll();
+    void randomizeAll (float amount = 1.f);
     void showDicePanel();
+public:
+    void showFxMorphPanel();          // FX Morph scenes and pad (FX tab button, mini pad title)
+private:
 
     Ferrum8Processor& proc;
     ui::LookAndFeel lnf;
@@ -80,6 +88,7 @@ private:
     int lastMainMenuItem = 0;
     float zoom = 1.0f;
     std::unique_ptr<juce::FileChooser> chooser;
+    std::unique_ptr<ui::Tutorial> tutorial;
     juce::Rectangle<int> statusArea;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Ferrum8Editor)

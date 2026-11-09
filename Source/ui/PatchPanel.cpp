@@ -8,11 +8,15 @@ namespace ui
 using namespace juce;
 using namespace ferrum;
 
-static constexpr int kCellW = 66, kCellH = 66, kTitleH = 20, kGroupGap = 14, kRowGap = 8, kHeaderH = 38;
+static constexpr int kCellW = 62, kCellH = 66, kTitleH = 20, kGroupGap = 14, kRowGap = 8, kHeaderH = 38;
 
-PatchPanel::PatchPanel (Ferrum8Processor& p) : proc (p)
+PatchPanel::PatchPanel (Ferrum8Processor& p) : proc (p), modStrip (p)
 {
     buildControls();
+    addAndMakeVisible (modStrip);
+    modStrip.onOpenMod = [this] (int m) { if (onOpenMod) onOpenMod (m); };
+    modStrip.showStatus = [this] (const String& t) { if (showStatus) showStatus (t); };
+    modStrip.onDepthChanged = [this] { updateModRings(); };
 
     addAndMakeVisible (modelSel);
     modelSel.setTooltip ("Voice model: the LXR's drum, snare, cymbal or hi-hat engine");
@@ -39,7 +43,7 @@ PatchPanel::PatchPanel (Ferrum8Processor& p) : proc (p)
                         "the Sound Morph slider is nearest to; the other end keeps its sound.");
     flavorBtn.setTooltip ("Random sound in a genre (a Drum & Bass snare, a Trap kick ...), a cymbal type, or another kind of sound");
     flavorBtn.onClick = [this] { showRandomMenu(); };
-    alterBtn.setTooltip ("Alter: small random changes to this patch");
+    alterBtn.setTooltip ("Alter: random changes to every sound parameter of this patch, as big as where you click");
     editAllBtn.setTooltip ("Edit All: knob moves apply to every unmuted channel");
     addAndMakeVisible (mutateBtn);
     mutateBtn.setTooltip ("Sound mutation for this channel: every few loops its sound moves a little (pitch, decay, tone, filter, "
@@ -53,8 +57,11 @@ PatchPanel::PatchPanel (Ferrum8Processor& p) : proc (p)
     nextBtn.onClick = [this] { stepPatchFile (1); };
     openBtn.onClick = [this] { runPatchMenuItem (1); };
     saveBtn.onClick = [this] { runPatchMenuItem (2); };
-    diceBtn.onClick = [this] { runPatchMenuItem (10); };
-    alterBtn.onClick = [this] { runPatchMenuItem (9); };
+    // positional dice: the click position sets how far the sound moves (left ~1 %, right edge 100 %)
+    diceBtn.setPositional (true);
+    alterBtn.setPositional (true);
+    diceBtn.onClick = [this] { diceAmount = diceBtn.clickAmount(); runPatchMenuItem (10); diceAmount = -1.f; };
+    alterBtn.onClick = [this] { diceAmount = alterBtn.clickAmount(); runPatchMenuItem (9); diceAmount = -1.f; };
 
     addAndMakeVisible (nameBox);
     nameBox.setColour (TextButton::buttonColourId, col::bg);
@@ -124,24 +131,20 @@ void PatchPanel::buildControls()
                     proc.setMods (ms);
                     if (showStatus) showStatus (String (paramDef (p).name) + ": modulation removed");
                 }
-                else
-                {
-                    r.depth = 0.3f;
-                    const int m = id - 1000;
-                    if (proc.addModRoute (m, r) < 0) { if (showStatus) showStatus ("MOD " + String (m + 1) + " already has 8 targets"); return; }
-                    if (showStatus) showStatus ("MOD " + String (m + 1) + " now moves " + paramDef (p).name + " on channel " + String (channel + 1)
-                                                + " (30%). Set its shape and depth on the MOD tab.");
-                }
+                else assignMod (p, id - 1000, false);
                 proc.sendUiChange();
             };
+            // a modulator tile dragged from the MOD strip
+            k->onModDrop = [this, p] (int m) { proc.pushUndo(); assignMod (p, m, true); proc.sendUiChange(); };
             controls[(size_t) p] = std::move (k);
         }
         String tip (d.name);
         if (p == P_GHOST) tip = "Ghost Depth: how much softer, darker and rounder the GHOST lane levels 1-3 play (50% = normal, 0% = off)";
         if (p == P_HUMANIZE) tip = "Humanize: timing and dynamics that wander from hit to hit like a real player";
         if (p == P_VARIANCE) tip = "Variance: random per-hit changes to decay, pitch, tone, filter and transient (happy accidents)";
-        if (p == P_OUTPUT) tip = "Output: plugin output A (main) or B, through the FX 1 / FX 2 bus of the FX rack, or Own: the channel's own "
-                                 "plugin output (Ch 1 - Ch 8) so it can go to its own mixer track for sidechain or separate processing";
+        if (p == P_OUTPUT) tip = "Output: plugin output A (main) or B, through the FX 1 / FX 2 bus of the FX rack, or 'Ch n Out': this channel's "
+                                 "own plugin output, so it can go to its own mixer track (sidechain, separate processing). In FL Studio map the "
+                                 "outputs to mixer tracks in the plugin's wrapper settings (Processing tab). Main menu > Outputs routes every channel at once.";
         if (auto* tc = dynamic_cast<SettableTooltipClient*> (controls[(size_t) p].get())) tc->setTooltip (tip);
         addAndMakeVisible (*controls[(size_t) p]);
     }
@@ -184,6 +187,7 @@ void PatchPanel::setChannel (int ch)
 {
     channel = jlimit (0, Ferrum8Processor::NC - 1, ch);
     proc.editorChannel = channel;
+    modStrip.setChannel (channel);
     for (int p = 0; p < NUM_PATCH_PARAMS; ++p)
     {
         auto* c = controls[(size_t) p].get();
@@ -198,15 +202,31 @@ void PatchPanel::setChannel (int ch)
     refresh();
 }
 
-void PatchPanel::refresh()
+void PatchPanel::assignMod (int p, int m, bool dropped)
 {
-    updateMutateButton();
+    mod::Route r; r.kind = mod::Route::Channel; r.ch = channel; r.param = p; r.depth = 0.3f;
+    if (proc.addModRoute (m, r) < 0) { if (showStatus) showStatus ("MOD " + String (m + 1) + " already has 8 targets"); return; }
+    if (showStatus) showStatus ("MOD " + String (m + 1) + " now moves " + paramDef (p).name + " on channel " + String (channel + 1)
+                                + " (30%). " + (dropped ? "Set the depth in the MOD strip, the shape on the MOD tab." : "Set its shape and depth on the MOD tab."));
+}
+
+void PatchPanel::updateModRings()
+{
     for (int p = 0; p < NUM_PATCH_PARAMS; ++p) // modulation ranges on the knobs
         if (auto* k = dynamic_cast<Knob*> (controls[(size_t) p].get()))
         {
             mod::Route r; r.kind = mod::Route::Channel; r.ch = channel; r.param = p;
             k->setModRange (proc.modDepthOn (r));
         }
+}
+
+void PatchPanel::refresh()
+{
+    updateMutateButton();
+    modStrip.refresh();
+    if (auto* box = dynamic_cast<ChoiceBox*> (controls[(size_t) P_OUTPUT].get())) // name the channel's own output
+        box->setDisplayNames ({ "A", "B", "FX 1", "FX 2", "Ch " + String (channel + 1) + " Out" });
+    updateModRings();
     const Model m = (Model) choiceIndex (proc.getPatchValue (channel, P_MODEL), 4);
     for (int p = 0; p < NUM_PATCH_PARAMS; ++p)
     {
@@ -253,6 +273,8 @@ void PatchPanel::resized()
     alterBtn.setBounds (h.removeFromLeft (84)); h.removeFromLeft (6);
     mutateBtn.setBounds (h.removeFromLeft (142));
     editAllBtn.setBounds (h.removeFromRight (90));
+    // the MOD strip: right of the sound groups, full body height
+    modStrip.setBounds (getLocalBounds().reduced (10, 6).withTrimmedTop (kHeaderH + 6).removeFromRight (148));
     layoutGroups();
 }
 
@@ -492,15 +514,29 @@ void PatchPanel::runPatchMenuItem (int id)
         case 9:
         {
             proc.pushUndo();
-            const int end = proc.setPatchAtActiveEnd (ch, proc.randomizer.alter (proc.getActiveEnd (ch)));
-            if (showStatus) showStatus ("Altered channel " + String (ch + 1) + "  (morph end " + Ferrum8Processor::endName (end) + ")");
+            // the menu's Alter is the classic small one (12 %); the button alters by where it was clicked
+            const float amount = diceAmount >= 0.f ? diceAmount : 0.12f;
+            const int end = proc.setPatchAtActiveEnd (ch, proc.randomizer.alter (proc.getActiveEnd (ch), amount));
+            if (showStatus) showStatus ("Altered channel " + String (ch + 1) + " by " + IconButton::amountText (amount)
+                                        + "  (morph end " + Ferrum8Processor::endName (end) + ")");
             break;
         }
         case 10:
         {
             proc.pushUndo();
             const Genre g = proc.randomizer.genreFor (proc.dice);
-            const Patch p = proc.randomizer.patchForModel (proc.getActiveEnd (ch), g);
+            const Patch cur = proc.getActiveEnd (ch);
+            Patch p = proc.randomizer.patchForModel (cur, g);
+            if (diceAmount >= 0.f && diceAmount < 0.98f)
+            {
+                // part of the way to a new sound of the same model; the channel keeps its name
+                p = proc.randomizer.blendToward (cur, p, diceAmount);
+                if (proc.dice.key >= 0) Randomizer::tuneToKey (p, proc.dice.key);
+                const int end = proc.setPatchAtActiveEnd (ch, p);
+                if (showStatus) showStatus ("Channel " + String (ch + 1) + " moved " + IconButton::amountText (diceAmount)
+                                            + " towards a new sound  (morph end " + Ferrum8Processor::endName (end) + ", click further right for more)");
+                break;
+            }
             const Flavor f = Randomizer::guessFlavor (p);
             rollTo (p, (g == Genre::Any ? String ("Rnd") : String (kGenreNames[(int) g])) + " " + kFlavorNames[(int) f]);
             break;
@@ -625,10 +661,16 @@ public:
                           [] (float v) { return String (roundToInt (v * 100.f)) + "%"; },
                           [] (const String& t, float& n) { n = jlimit (0.f, 1.f, t.getFloatValue() / 100.f); return true; } });
         depth.setTooltip ("How far each mutation moves the sound (pitch up to 2 semitones, decay, tone, filter, noise, FM depth, transient, drive)");
-        nowBtn.onClick = [this] { proc.pushUndo(); proc.mutateSoundNow (channel); if (showStatus) showStatus ("Mutated channel " + String (channel + 1)); };
+        nowBtn.setPositional (true);
+        nowBtn.onClick = [this]
+        {
+            proc.pushUndo();
+            proc.mutateSoundNow (channel, nowBtn.clickAmount());
+            if (showStatus) showStatus ("Mutated channel " + String (channel + 1) + " by " + IconButton::amountText (nowBtn.clickAmount()));
+        };
         keepBtn.onClick = [this] { proc.keepMutationHome (channel); if (showStatus) showStatus ("Channel " + String (channel + 1) + ": this sound is now the home Orbit returns to"); };
         homeBtn.onClick = [this] { proc.restoreMutationHome (channel); if (showStatus) showStatus ("Channel " + String (channel + 1) + " back to its home sound"); };
-        nowBtn.setTooltip ("One mutation step now (Ctrl+Z undoes it)");
+        nowBtn.setTooltip ("One mutation step now, as big as where you click (Ctrl+Z undoes it)");
         keepBtn.setTooltip ("Make the current sound the home sound (Orbit mutates around it)");
         homeBtn.setTooltip ("Go back to the home sound");
         setSize (360, 250);
@@ -691,6 +733,7 @@ void PatchPanel::updateMutateButton()
 
 void PatchPanel::tick()
 {
+    modStrip.tick();
     const uint32_t c = proc.mutationCount (channel);
     if (c != lastMutCount) { lastMutCount = c; mutateBtn.setBlink (true); blinkFrames = 6; }
     else if (blinkFrames > 0 && --blinkFrames == 0) mutateBtn.setBlink (false);

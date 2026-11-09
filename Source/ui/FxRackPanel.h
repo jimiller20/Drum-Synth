@@ -19,6 +19,8 @@ public:
     void showBus (int bus);
     int getBus() const { return bus; }
     std::function<void (const juce::String&)> showStatus;
+    std::function<void()> onOpenMorph;               // the FX Morph button
+    juce::Rectangle<int> morphButtonBounds() const { return morphBtn.getBounds(); }
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -53,7 +55,7 @@ private:
     void setModule (int lane, int slot, ferrum::fx::Type t);
     void moveSlot (int fromLane, int fromSlot, int toLane, int toSlot, bool copy);
     void showChainMenu();
-    void rollChain();
+    void rollChain (float amount = 1.f);   // 1 = a new chain, less = the modules' settings move that much
     void applyBus (const ferrum::fx::RackState::Bus& b, const juce::String& what);
     void toggleSend (int bus, int ch);
     void showDestMenu (int b);
@@ -73,7 +75,8 @@ private:
 
     Knob dryKnob, outKnob;
     Segmented modeSel;   // Insert (dry 0 %) / Parallel (dry 100 %)
-    IconButton chainsBtn { IconButton::Icon::Down, "Chains" }, diceBtn { IconButton::Icon::Dice, "Roll Chain" };
+    IconButton chainsBtn { IconButton::Icon::Down, "Chains" }, diceBtn { IconButton::Icon::Dice, "Roll Chain" },
+               morphBtn { IconButton::Icon::None, "FX Morph" };
     std::array<Knob, ferrum::fx::kLanes> laneKnobs;
     // module editor
     std::array<Knob, ferrum::fx::kMaxParams> pKnobs;

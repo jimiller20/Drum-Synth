@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include "Controls.h"
+#include "ModStrip.h"
 #include "../PluginProcessor.h"
 
 namespace ui
@@ -20,8 +21,12 @@ public:
     void resized() override;
 
     std::function<void (const juce::String&)> showStatus;
+    std::function<void (int)> onOpenMod;          // a MOD strip tile was clicked
+    ModStrip& getModStrip() { return modStrip; }
 
 private:
+    void assignMod (int param, int modulator, bool dropped);
+    void updateModRings();
     struct Group { juce::String title; std::vector<int> params; juce::Rectangle<int> bounds; };
     void buildControls();
     void layoutGroups();
@@ -46,8 +51,10 @@ private:
                diceBtn { IconButton::Icon::Dice, "Random" }, flavorBtn { IconButton::Icon::Down }, alterBtn { IconButton::Icon::Alter, "Alter" },
                editAllBtn { IconButton::Icon::None, "EDIT ALL" }, mutateBtn { IconButton::Icon::None, "Mutate: Off" };
     juce::TextButton nameBox;
+    ModStrip modStrip;
     juce::Rectangle<int> headerArea, nameArea;
     int lastPatchMenuItem = 0;
+    float diceAmount = -1.f;           // set by a positional dice click for the item it runs (-1: from a menu)
     uint32_t lastMutCount = 0;
     int blinkFrames = 0;
     std::unique_ptr<juce::FileChooser> chooser;

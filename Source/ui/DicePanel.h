@@ -17,7 +17,7 @@ public:
 
 private:
     void sync();                                   // controls <- processor
-    void roll (int kind);                          // 0 sounds, 1 beat, 2 all, 3 morph targets
+    void roll (int kind, float amount);                          // 0 sounds, 1 beat, 2 all, 3 morph targets
     void showHistory();
 
     Ferrum8Processor& proc;
@@ -25,7 +25,9 @@ private:
     juce::ComboBox style, genre, character, key, evolve, every;
     juce::Slider density, complexity, expression, mutation;
     juce::TextButton scopeOne { "Selected pattern" }, scopeAll { "All patterns A-L" };
-    juce::TextButton soundsBtn { "Sounds" }, beatBtn { "Beat" }, allBtn { "All" }, morphBtn { "Morph B" };
+    // positional dice: where they are clicked sets how much they change
+    IconButton soundsBtn { IconButton::Icon::Dice, "Sounds" }, beatBtn { IconButton::Icon::Dice, "Beat" },
+               allBtn { IconButton::Icon::Dice, "All" }, morphBtn { IconButton::Icon::Dice, "Morph B" };
     juce::TextButton historyBtn { "History" }, keepBtn { "Keep variation" };
     juce::Rectangle<int> beatHeader, kitHeader, evolveHeader, rollHeader;
     std::vector<std::pair<juce::Rectangle<int>, juce::String>> labels;

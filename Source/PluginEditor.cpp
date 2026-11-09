@@ -26,11 +26,15 @@ Ferrum8Editor::Ferrum8Editor (Ferrum8Processor& p)
     fxTab.onClick = [this] { setTab (1); };
     fxPanel.showStatus = [this] (const String& s) { status (s); };
     global.onOpenFx = [this] (int b) { fxPanel.showBus (b); setTab (1); };
+    global.onOpenFxMorph = [this] { showFxMorphPanel(); };
+    global.getMorphPad().showStatus = [this] (const String& s) { status (s); };
+    fxPanel.onOpenMorph = [this] { showFxMorphPanel(); };
 
     toolbar.mainMenuBtn.onClick = [this] { showMainMenu (ModifierKeys::currentModifiers.isShiftDown()); };
-    toolbar.soundsBtn.onClick = [this] { status (proc.rollSounds()); selectChannel (proc.editorChannel); };
-    toolbar.beatBtn.onClick = [this] { status (proc.rollBeat()); };
-    toolbar.allBtn.onClick = [this] { randomizeAll(); };
+    // the dice change by the amount under the mouse (left edge ~1 %, right edge 100 %)
+    toolbar.soundsBtn.onClick = [this] { status (proc.rollSounds (toolbar.soundsBtn.clickAmount())); selectChannel (proc.editorChannel); };
+    toolbar.beatBtn.onClick = [this] { status (proc.rollBeat (toolbar.beatBtn.clickAmount())); };
+    toolbar.allBtn.onClick = [this] { randomizeAll (toolbar.allBtn.clickAmount()); };
     toolbar.diceMenuBtn.onClick = [this] { showDicePanel(); };
     channels.onStatus = [this] (const String& s) { status (s); };
     toolbar.onStepPreset = [this] (int d) { stepPreset (d); };
@@ -43,6 +47,7 @@ Ferrum8Editor::Ferrum8Editor (Ferrum8Processor& p)
     pattern.onPreview = [this] (int ch, bool acc) { preview (ch, acc); };
     pattern.showStatus = [this] (const String& s) { status (s); };
     patch.showStatus = [this] (const String& s) { status (s); };
+    patch.onOpenMod = [this] (int m) { modPanel.select (m); setTab (2); };
     global.onPlay = [this] { pressPlay(); };
     global.onStop = [this] { pressStop(); };
 
@@ -59,6 +64,27 @@ Ferrum8Editor::Ferrum8Editor (Ferrum8Processor& p)
     setZoom (z);
     setWantsKeyboardFocus (true);
     startTimerHz (30);
+    if (autoTutorial && ! ui::Tutorial::hasBeenSeen()) showTutorial (0);
+}
+
+void Ferrum8Editor::showTutorial (int page)
+{
+    if (tutorial == nullptr)
+    {
+        tutorial = std::make_unique<ui::Tutorial>();
+        content.addAndMakeVisible (*tutorial);
+        tutorial->setBounds (0, 0, kDesignW, kDesignH);
+        SafePointer<Ferrum8Editor> safe (this);
+        tutorial->onClose = [safe]
+        {
+            ui::Tutorial::markSeen();
+            // not from inside the tutorial's own button callback
+            MessageManager::callAsync ([safe] { if (safe != nullptr) { safe->tutorial.reset(); safe->grabKeyboardFocus(); } });
+        };
+    }
+    tutorial->showPage (page);
+    tutorial->toFront (true);
+    if (isShowing()) tutorial->grabKeyboardFocus();
 }
 
 Ferrum8Editor::~Ferrum8Editor()
@@ -94,6 +120,7 @@ void Ferrum8Editor::resized()
     modPanel.setBounds (0, 148, kDesignW, 590);
     global.setBounds (0, 738, kDesignW, 112);
     statusArea = { 0, 850, kDesignW, 32 };
+    if (tutorial != nullptr) tutorial->setBounds (0, 0, kDesignW, kDesignH);
     content.repaint();
 }
 
@@ -116,6 +143,7 @@ void Ferrum8Editor::changeListenerCallback (ChangeBroadcaster*)
     patch.refresh();
     toolbar.refresh();
     channels.repaint();
+    pattern.updateDiceButton();
     pattern.repaint();
     fxPanel.refresh();
     modPanel.refresh();
@@ -232,10 +260,19 @@ void Ferrum8Editor::pressStop()
     else proc.getEngine().requestImmediateStop();
 }
 
-void Ferrum8Editor::randomizeAll()
+void Ferrum8Editor::randomizeAll (float amount)
 {
-    status (proc.rollAll());
+    status (proc.rollAll (amount));
     selectChannel (proc.editorChannel);
+}
+
+void Ferrum8Editor::showFxMorphPanel()
+{
+    SafePointer<Ferrum8Editor> safe (this);
+    auto panel = std::make_unique<ui::FxMorphPanel> (proc, [safe] (const String& s) { if (safe != nullptr) safe->status (s); });
+    auto area = getLocalArea (&global, global.getMorphPad().getBounds());
+    if (tab == 1) area = getLocalArea (&fxPanel, fxPanel.morphButtonBounds());
+    CallOutBox::launchAsynchronously (std::move (panel), area, this);
 }
 
 void Ferrum8Editor::showDicePanel()
@@ -287,7 +324,14 @@ void Ferrum8Editor::showMainMenu (bool repeatLast)
     m.addItem (13, "Randomize All");
     m.addItem (42, "Dice Settings...");
     m.addSubMenu ("Sound Morph", morph);
+    PopupMenu outs;
+    outs.addItem (50, "Every Channel To Its Own Output (Ch 1 - Ch 8)");
+    outs.addItem (51, "Every Channel Back To Output A");
+    outs.addSeparator();
+    outs.addItem (52, "How Multiple Outputs Work...");
+    m.addSubMenu ("Outputs (multi-out)", outs);
     m.addSeparator();
+    m.addItem (53, "Show Tutorial");
     m.addItem (17, "MIDI Config...");
     m.addSubMenu ("Zoom", zoomMenu);
     m.addItem (18, "Show Preset Folder");
@@ -396,6 +440,10 @@ void Ferrum8Editor::runMainMenuItem (int id)
         case 17: showMidiConfig(); break;
         case 18: Ferrum8Processor::presetFolder().startAsProcess(); break;
         case 21: showAbout(); break;
+        case 50: proc.routeAllChannels (true); status ("Every channel now plays on its own output: Ch 1 - Ch 8 (give them mixer tracks in your DAW)"); break;
+        case 51: proc.routeAllChannels (false); status ("Every channel back on output A"); break;
+        case 52: showTutorial (5); break;
+        case 53: showTutorial (0); break;
         default:
             if (id >= 200 && id < 300)
             {

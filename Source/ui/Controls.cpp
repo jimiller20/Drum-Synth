@@ -90,6 +90,14 @@ void Knob::paint (Graphics& g)
         g.fillEllipse (c.x + std::sin (a1) * rr - 2.f, c.y - std::cos (a1) * rr - 2.f, 4.f, 4.f);
     }
 
+    if (dropHover) // a modulator is about to be dropped here
+    {
+        g.setColour (col::mod.withAlpha (0.18f));
+        g.fillEllipse (c.x - r - 6.f, c.y - r - 6.f, (r + 6.f) * 2.f, (r + 6.f) * 2.f);
+        g.setColour (col::mod);
+        g.drawEllipse (c.x - r - 6.f, c.y - r - 6.f, (r + 6.f) * 2.f, (r + 6.f) * 2.f, 1.5f);
+    }
+
     const float br = r - 5.5f;
     g.setGradientFill (ColourGradient (col::raised.brighter (0.12f), c.x, c.y - br, col::panel, c.x, c.y + br, false));
     g.fillEllipse (c.x - br, c.y - br, br * 2, br * 2);
@@ -104,6 +112,19 @@ void Knob::paint (Graphics& g)
     g.setFont (font (showValue ? 14.f : 14.5f, showValue));
     g.setColour (showValue ? ac.brighter (0.2f) : (inactive ? col::faint : col::dim));
     g.drawFittedText (showValue ? valueText() : label, b.removeFromBottom (kLabelH + 1.f).toNearestInt(), Justification::centred, 1, 0.8f);
+}
+
+bool Knob::isInterestedInDragSource (const SourceDetails& d)
+{
+    return onModDrop != nullptr && ! inactive && d.description.toString().startsWith ("ferrum-mod:");
+}
+
+void Knob::itemDropped (const SourceDetails& d)
+{
+    dropHover = false;
+    repaint();
+    const int m = d.description.toString().fromFirstOccurrenceOf (":", false, false).getIntValue();
+    if (onModDrop) onModDrop (m);
 }
 
 void Knob::setNorm (float n, bool gesture)
@@ -217,7 +238,12 @@ void Knob::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& w)
 ChoiceBox::ChoiceBox() {}
 ChoiceBox::~ChoiceBox() { att.reset(); }
 
-StringArray ChoiceBox::names() const { return param != nullptr ? choicesOf (param) : freeChoices; }
+StringArray ChoiceBox::names() const
+{
+    auto n = param != nullptr ? choicesOf (param) : freeChoices;
+    if (displayNames.size() == n.size()) return displayNames;
+    return n;
+}
 
 void ChoiceBox::bindFree (const String& name, const StringArray& choices, int i)
 {
@@ -404,6 +430,55 @@ void Segmented::mouseDown (const MouseEvent& e)
 //==============================================================================================
 IconButton::IconButton (Icon i, const String& buttonText) : Button (buttonText), icon (i) {}
 
+float IconButton::amountAt (float x, float width)
+{
+    if (width <= 1.f) return 1.f;
+    const float t = jlimit (0.f, 1.f, x / width);
+    if (t >= 0.92f) return 1.f;                       // the right edge: a full roll
+    return jlimit (0.01f, 1.f, 0.01f + 0.99f * t / 0.92f);
+}
+
+void IconButton::mouseDown (const MouseEvent& e)
+{
+    if (e.mods.isPopupMenu() && onRightClick) { rightDown = true; onRightClick(); return; }
+    rightDown = false;
+    if (positional) amount = amountAt (e.position.x, (float) getWidth());
+    Button::mouseDown (e);
+}
+
+void IconButton::mouseUp (const MouseEvent& e)
+{
+    if (rightDown) { rightDown = false; return; }
+    Button::mouseUp (e);
+}
+
+void IconButton::mouseMove (const MouseEvent& e)
+{
+    Button::mouseMove (e);
+    if (positional) { hoverX = e.position.x; repaint(); }
+}
+
+void IconButton::mouseDrag (const MouseEvent& e)
+{
+    Button::mouseDrag (e);
+    if (positional && ! rightDown) { hoverX = e.position.x; amount = amountAt (hoverX, (float) getWidth()); repaint(); }
+}
+
+void IconButton::mouseExit (const MouseEvent& e)
+{
+    Button::mouseExit (e);
+    if (positional) { hoverX = -1.f; repaint(); }
+}
+
+String IconButton::getTooltip()
+{
+    auto t = Button::getTooltip();
+    if (positional)
+        t << (t.isEmpty() ? "" : "\n") << "Where you click sets how much: left edge ~1 % (a nudge) ... right edge 100 % (all new)"
+          << (hoverX >= 0.f ? "  -  here: " + amountText (amountAt (hoverX, (float) getWidth())) : String());
+    return t;
+}
+
 void IconButton::paintButton (Graphics& g, bool over, bool down)
 {
     auto r = getLocalBounds().toFloat().reduced (0.5f);
@@ -416,24 +491,46 @@ void IconButton::paintButton (Graphics& g, bool over, bool down)
     g.setColour (col::line.brighter (0.15f));
     g.drawRoundedRectangle (r, 4.f, 1.f);
     const auto fg = on ? Colours::black : (isEnabled() ? col::text : col::faint);
-    if (icon != Icon::None)
+    // positional dice: a thin scale along the bottom (dim at the left, bright at the right); while
+    // hovering it fills up to the mouse and the label shows the amount
+    const bool showAmount = positional && isEnabled() && (over || down) && hoverX >= 0.f;
+    if (positional && isEnabled())
+    {
+        auto bar = r.reduced (3.f, 0.f).removeFromBottom (4.f).withTrimmedBottom (1.5f);
+        g.setGradientFill (ColourGradient (accent.withAlpha (0.10f), bar.getX(), 0.f, accent.withAlpha (showAmount ? 0.35f : 0.45f), bar.getRight(), 0.f, false));
+        g.fillRect (bar);
+        if (showAmount)
+        {
+            g.setGradientFill (ColourGradient (accent.withAlpha (0.45f), bar.getX(), 0.f, accent, bar.getRight(), 0.f, false));
+            g.fillRect (bar.withWidth (jlimit (1.f, bar.getWidth(), hoverX - bar.getX())));
+        }
+    }
+    const String text = showAmount ? (getButtonText().isNotEmpty() ? getButtonText() + "  " : String()) + amountText (amountAt (hoverX, (float) getWidth()))
+                                   : getButtonText();
+    if (showAmount && getButtonText().isEmpty())
+    {
+        g.setColour (fg);
+        g.setFont (font (jmin (14.f, r.getHeight() * 0.55f), true));
+        g.drawFittedText (text, r.toNearestInt(), Justification::centred, 1, 0.6f);
+    }
+    else if (icon != Icon::None)
     {
         auto ir = r.reduced (r.getHeight() * 0.24f);
-        if (getButtonText().isNotEmpty()) ir = ir.withWidth (ir.getHeight());
+        if (text.isNotEmpty()) ir = ir.withWidth (ir.getHeight());
         else ir = ir.withSizeKeepingCentre (jmin (ir.getWidth(), ir.getHeight()), jmin (ir.getWidth(), ir.getHeight()));
         drawIcon (g, icon, ir, fg);
-        if (getButtonText().isNotEmpty())
+        if (text.isNotEmpty())
         {
             g.setColour (fg);
             g.setFont (font (15.f, true));
-            g.drawFittedText (getButtonText(), r.withTrimmedLeft (ir.getRight() - r.getX() + 2).toNearestInt(), Justification::centredLeft, 1);
+            g.drawFittedText (text, r.withTrimmedLeft (ir.getRight() - r.getX() + 2).toNearestInt(), Justification::centredLeft, 1, 0.7f);
         }
     }
     else
     {
         g.setColour (fg);
         g.setFont (font (jmin (16.f, r.getHeight() * 0.68f), true));
-        g.drawFittedText (getButtonText(), r.toNearestInt(), Justification::centred, 1, 0.7f);
+        g.drawFittedText (text, r.toNearestInt(), Justification::centred, 1, 0.7f);
     }
 }
 

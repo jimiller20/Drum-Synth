@@ -31,10 +31,10 @@ DicePanel::DicePanel (Ferrum8Processor& p, std::function<void (const String&)> s
 
     for (auto* s : { &density, &complexity, &expression, &mutation }) { styleSlider (*s, " %"); addAndMakeVisible (s); }
     for (auto* c : { &style, &genre, &character, &key, &evolve, &every }) addAndMakeVisible (c);
-    for (auto* b : { &scopeOne, &scopeAll, &soundsBtn, &beatBtn, &allBtn, &morphBtn, &historyBtn, &keepBtn }) addAndMakeVisible (b);
+    for (auto* b : std::initializer_list<Button*> { &scopeOne, &scopeAll, &soundsBtn, &beatBtn, &allBtn, &morphBtn, &historyBtn, &keepBtn }) addAndMakeVisible (b);
     scopeOne.setClickingTogglesState (true); scopeAll.setClickingTogglesState (true);
     scopeOne.setRadioGroupId (771); scopeAll.setRadioGroupId (771);
-    for (auto* b : { &soundsBtn, &beatBtn, &allBtn }) b->setColour (TextButton::buttonColourId, col::accent.withAlpha (0.85f)), b->setColour (TextButton::textColourOffId, Colours::black);
+    for (auto* b : { &soundsBtn, &beatBtn, &allBtn, &morphBtn }) b->setPositional (true);
 
     style.setTooltip ("Rhythm style for Beat and All");
     density.setTooltip ("Sparse .. busy");
@@ -66,10 +66,10 @@ DicePanel::DicePanel (Ferrum8Processor& p, std::function<void (const String&)> s
     mutation.onValueChange = [this] { proc.dice.mutation = (float) mutation.getValue() / 100.f; };
     scopeOne.onClick = [this] { proc.dice.allPatterns = false; };
     scopeAll.onClick = [this] { proc.dice.allPatterns = true; };
-    soundsBtn.onClick = [this] { roll (0); };
-    beatBtn.onClick = [this] { roll (1); };
-    allBtn.onClick = [this] { roll (2); };
-    morphBtn.onClick = [this] { roll (3); };
+    soundsBtn.onClick = [this] { roll (0, soundsBtn.clickAmount()); };
+    beatBtn.onClick = [this] { roll (1, beatBtn.clickAmount()); };
+    allBtn.onClick = [this] { roll (2, allBtn.clickAmount()); };
+    morphBtn.onClick = [this] { roll (3, morphBtn.clickAmount()); };
     keepBtn.onClick = [this] { proc.keepEvolvedAsHome(); if (status) status ("Evolve now orbits around the variation you just heard"); };
     historyBtn.onClick = [this] { showHistory(); };
     sync();
@@ -94,15 +94,15 @@ void DicePanel::sync()
     keepBtn.setEnabled (d.evolve == 1);
 }
 
-void DicePanel::roll (int kind)
+void DicePanel::roll (int kind, float amount)
 {
     String msg;
     switch (kind)
     {
-        case 0: msg = proc.rollSounds(); break;
-        case 1: msg = proc.rollBeat(); break;
-        case 2: msg = proc.rollAll(); break;
-        default: msg = proc.rollMorphTargets(); break;
+        case 0: msg = proc.rollSounds (amount); break;
+        case 1: msg = proc.rollBeat (amount); break;
+        case 2: msg = proc.rollAll (amount); break;
+        default: msg = proc.rollMorphTargets (amount); break;
     }
     if (status) status (msg);
 }

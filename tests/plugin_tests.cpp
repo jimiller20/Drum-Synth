@@ -61,13 +61,14 @@ static void snapshot (Component& c, const File& f)
 int main (int argc, char** argv)
 {
     ScopedJuceInitialiser_GUI init;
+    Ferrum8Editor::autoTutorial = false;   // the first-run tour is shown on purpose below
     const File outDir = argc > 1 ? File (String (argv[1])) : File::getCurrentWorkingDirectory();
     outDir.createDirectory();
 
     auto proc = std::make_unique<Ferrum8Processor>();
     proc->setRateAndBufferSizeDetails (48000, 512);
     proc->prepareToPlay (48000, 512);
-    CHECK (proc->getParameters().size() == 8 * NUM_PATCH_PARAMS + 22, "parameter count");
+    CHECK (proc->getParameters().size() == 8 * NUM_PATCH_PARAMS + 24, "parameter count");
 
     // MIDI note C1 triggers channel 1
     {
@@ -719,23 +720,59 @@ int main (int argc, char** argv)
             p->setSoundMutation (1, sm);
             const Patch home = p->getActiveEnd (1);
             const Patch other = p->getActiveEnd (0);
+            const float homeLoud = Randomizer::hitLoudness (home);
             float maxMove = 0.f;
+            int even = 0, measured = 0;
             bool same = true;
             for (int i = 0; i < 12; ++i)
             {
                 p->mutateSoundNow (1);
                 const Patch now = p->getActiveEnd (1);
                 for (int k = 0; k < NUM_PATCH_PARAMS; ++k)
-                    if (paramDef (k).numChoices == 0) maxMove = std::max (maxMove, std::abs (now[(size_t) k] - home[(size_t) k]));
+                    if (k == P_LEVEL) continue;   // the level follows the loudness (see below)
+                    else if (paramDef (k).numChoices == 0) maxMove = std::max (maxMove, std::abs (now[(size_t) k] - home[(size_t) k]));
                     else if (k != P_TRANS_WAVE) same &= now[(size_t) k] == home[(size_t) k];
-                same &= now[P_MODEL] == home[P_MODEL] && now[P_LEVEL] == home[P_LEVEL] && now[P_OUTPUT] == home[P_OUTPUT];
+                same &= now[P_MODEL] == home[P_MODEL] && now[P_OUTPUT] == home[P_OUTPUT];
+                if (now[P_LEVEL] < 0.999f) { ++measured; even += std::abs (Randomizer::hitLoudness (now) - homeLoud) < 0.75f; }
             }
             bool othersStill = true;
             const Patch other2 = p->getActiveEnd (0);
             for (int k = 0; k < NUM_PATCH_PARAMS; ++k) othersStill &= other[(size_t) k] == other2[(size_t) k];
-            std::printf ("     orbit mutation: largest move from home %.3f\n", maxMove);
-            CHECK (maxMove > 0.01f && maxMove <= 0.14f * 0.5f + 1e-4f && same, "Orbit mutation stays near the home sound and never changes model, level or routing");
+            std::printf ("     orbit mutation: largest move from home %.3f; %d of %d with level headroom within 0.75 dB of home (home level %.2f)\n",
+                         maxMove, even, measured, home[P_LEVEL]);
+            CHECK (maxMove > 0.01f && maxMove <= 0.14f * 0.5f + 1e-4f && same, "Orbit mutation stays near the home sound and never changes model or routing");
+            CHECK (even == measured, "mutation keeps the loudness even (the level follows drive, decay, tone)");
             CHECK (othersStill, "mutating one channel leaves the others alone");
+            {
+                // more drive alone: the level comes down until the hit is as loud as before
+                Patch h = home; h[P_DRIVE] = std::min (1.f, h[P_DRIVE] + 0.35f);
+                const float ref = Randomizer::hitLoudness (home);
+                const float reached = Randomizer::matchLoudness (h, ref, 0.02f, 1.f);
+                std::printf ("     drive %.2f -> %.2f: level %.3f -> %.3f, loudness %.2f -> %.2f LUFS\n", home[P_DRIVE], h[P_DRIVE], home[P_LEVEL], h[P_LEVEL], ref, reached);
+                CHECK (h[P_LEVEL] < home[P_LEVEL] && std::abs (reached - ref) < 0.5f, "when the drive goes up, the level goes down so the volume stays even");
+                p->restoreMutationHome (1);
+            }
+            {
+                // in key: pitched drums only land on the minor pentatonic of the Dice key
+                p->dice.key = 2; // D
+                bool inKey = true, moved = false;
+                const Patch kickHome = p->getActiveEnd (0);
+                Ferrum8Processor::SoundMutation km; km.every = 1; km.depth = 0.8f; km.mode = 1;
+                p->setSoundMutation (0, km);
+                for (int i = 0; i < 30; ++i)
+                {
+                    p->mutateSoundNow (0);
+                    const Patch now = p->getActiveEnd (0);
+                    const int note = (int) std::lround (now[P_OSC_COARSE] * 127.f);
+                    const int deg = ((note - 2) % 12 + 12) % 12;
+                    inKey &= (deg == 0 || deg == 3 || deg == 5 || deg == 7 || deg == 10) && std::abs (now[P_OSC_FINE] - 0.5f) < 1e-4f;
+                    moved |= now[P_OSC_COARSE] != kickHome[P_OSC_COARSE];
+                }
+                CHECK (inKey && moved, "sound mutation keeps pitched drums in the Dice key (and still moves the pitch)");
+                p->setSoundMutation (0, {});
+                p->restoreMutationHome (0);
+                p->dice.key = -1;
+            }
             const auto tree = p->createPresetTree();
             p->setSoundMutation (1, {});
             p->applyPresetTree (tree);
@@ -860,6 +897,204 @@ int main (int argc, char** argv)
                 CHECK (d3 > 0.02f, "an LFO routed to an FX parameter changes the bus");
             }
         }
+    }
+
+    // ---- round 4: multi-out shortcuts, partial dice, per-channel step variations ------------
+    {
+        auto p = std::make_unique<Ferrum8Processor>();
+        p->setRateAndBufferSizeDetails (48000, 512);
+        p->prepareToPlay (48000, 512);
+        p->loadKit (factoryKits()[0]);
+        const int nOut = paramDef (P_OUTPUT).numChoices;
+        p->routeAllChannels (true);
+        bool allOwn = true;
+        for (int c = 0; c < 8; ++c) allOwn &= choiceIndex (p->getPatchValue (c, P_OUTPUT), nOut) == 4;
+        p->routeAllChannels (false);
+        bool allA = true;
+        for (int c = 0; c < 8; ++c) allA &= choiceIndex (p->getPatchValue (c, P_OUTPUT), nOut) == 0;
+        CHECK (allOwn && allA, "Main menu > Outputs sends every channel to its own output and back to A");
+
+        // positional dice: the amount scale of a button
+        CHECK (std::abs (ui::IconButton::amountAt (0.f, 100.f) - 0.01f) < 1e-4f && ui::IconButton::amountAt (95.f, 100.f) == 1.f
+               && std::abs (ui::IconButton::amountAt (46.f, 100.f) - 0.505f) < 0.01f, "dice amount: left edge 1 %, middle ~50 %, right edge 100 %");
+
+        // blendToward: continuous parameters move that share of the way, the model never changes below 98 %
+        {
+            Randomizer rz (5);
+            const Patch a = p->getActiveEnd (0);
+            Patch b = a;
+            for (int k = 0; k < NUM_PATCH_PARAMS; ++k) if (paramDef (k).numChoices == 0) b[(size_t) k] = 1.f - a[(size_t) k];
+            b[P_MODEL] = choiceValue (2, 4);
+            const Patch h = rz.blendToward (a, b, 0.1f);
+            bool ok = h[P_MODEL] == a[P_MODEL] && h[P_OUTPUT] == a[P_OUTPUT];
+            for (int k = 0; k < NUM_PATCH_PARAMS; ++k)
+                if (paramDef (k).numChoices == 0) ok &= std::abs (h[(size_t) k] - (a[(size_t) k] + 0.1f * (b[(size_t) k] - a[(size_t) k]))) < 1e-5f;
+            const Patch f = rz.blendToward (a, b, 1.f);
+            CHECK (ok && f == b, "a 10 % sound roll moves every knob 10 % of the way; 100 % is the new sound");
+        }
+        // blendSteps: at least one step, about the share asked for, never a kept channel
+        {
+            Randomizer rz (9);
+            PatternData cur {}, fresh {};
+            cur.length = fresh.length = 16;
+            for (int c = 0; c < 8; ++c) { cur.trig[(size_t) c] = 0x1111; fresh.trig[(size_t) c] = 0xeeee; }
+            auto diffs = [] (const PatternData& x, const PatternData& y)
+            {
+                int n = 0;
+                for (int c = 0; c < 8; ++c) n += __builtin_popcount ((unsigned) (x.trig[(size_t) c] ^ y.trig[(size_t) c]));
+                return n;
+            };
+            ChannelMask keep {}; keep[3] = true;
+            PatternData a = cur; rz.blendSteps (a, fresh, 0.01f, keep);
+            PatternData b = cur; rz.blendSteps (b, fresh, 0.5f, keep);
+            PatternData c = cur; rz.blendSteps (c, fresh, 1.f, keep);
+            const int total = 7 * 16;
+            std::printf ("     partial beat: 1 %% -> %d steps, 50 %% -> %d of %d, 100 %% -> %d\n", diffs (a, cur), diffs (b, cur), total, diffs (c, cur));
+            CHECK (diffs (a, cur) == 1 && std::abs (diffs (b, cur) - total / 2) <= 1 && diffs (c, cur) == total
+                   && a.trig[3] == cur.trig[3] && c.trig[3] == cur.trig[3], "a partial beat roll changes that share of the steps (at least one), locked channels stay");
+        }
+        // partial rolls through the processor
+        {
+            const auto before = p->getPattern (p->getSelectedPattern());
+            p->rollBeat (0.05f);
+            const auto after = p->getPattern (p->getSelectedPattern());
+            int changed = 0;
+            for (int c = 0; c < 8; ++c)
+                for (int st = 0; st < kMaxSteps; ++st)
+                {
+                    bool d = ((before.trig[(size_t) c] ^ after.trig[(size_t) c]) >> st) & 1u;
+                    d |= ((before.acc[(size_t) c] ^ after.acc[(size_t) c]) >> st) & 1u;
+                    d |= ((before.fill[(size_t) c] ^ after.fill[(size_t) c]) >> st) & 1u;
+                    for (int l = 0; l < kNumExpr; ++l) d |= before.expr[(size_t) c][(size_t) l][(size_t) st] != after.expr[(size_t) c][(size_t) l][(size_t) st];
+                    changed += d;
+                }
+            std::printf ("     Beat at 5 %%: %d steps changed\n", changed);
+            CHECK (changed >= 1 && changed <= 12 && after.length == before.length, "Beat at 5 % changes only a few steps and keeps the length");
+            std::array<Patch, 8> s0; std::array<String, 8> n0;
+            for (int c = 0; c < 8; ++c) { s0[(size_t) c] = p->getActiveEnd (c); n0[(size_t) c] = p->getChannelName (c); }
+            p->rollSounds (0.05f);
+            float maxMove = 0.f; bool sameModel = true, sameNames = true;
+            for (int c = 0; c < 8; ++c)
+            {
+                const Patch now = p->getActiveEnd (c);
+                sameModel &= now[P_MODEL] == s0[(size_t) c][P_MODEL];
+                sameNames &= p->getChannelName (c) == n0[(size_t) c];
+                for (int k = 0; k < NUM_PATCH_PARAMS; ++k)
+                    if (paramDef (k).numChoices == 0) maxMove = std::max (maxMove, std::abs (now[(size_t) k] - s0[(size_t) c][(size_t) k]));
+            }
+            std::printf ("     Sounds at 5 %%: largest knob move %.3f\n", maxMove);
+            CHECK (sameModel && sameNames && maxMove > 0.f && maxMove <= 0.05f + 1e-4f, "Sounds at 5 % nudges every knob a little and keeps models and names");
+            p->undo(); p->undo();
+        }
+        // per-channel step variations
+        {
+            FakePlayHead ph;
+            p->setPlayHead (&ph);
+            p->selectPattern (0);
+            const auto home = p->getPattern (0);
+            Ferrum8Processor::StepReroll rr; rr.every = 1; rr.amount = 0.5f; rr.mode = 0;
+            p->setStepReroll (5, rr);
+            p->setParamValue ("play", 1.f);
+            pump (60);
+            bool changed = false, othersSame = true;
+            for (int k = 0; k < 8 && ! changed; ++k)
+            {
+                runBlocks (*p, 200, &ph); pump (60);
+                const auto now = p->getPattern (0);
+                changed = now.channel (5).trig != home.channel (5).trig;
+                for (int c = 0; c < 8; ++c) if (c != 5) othersSame &= now.trig[(size_t) c] == home.trig[(size_t) c];
+            }
+            CHECK (changed && othersSame && p->stepRerollCount (5) > 0, "a channel's step variations change only that channel while playing");
+            const auto tree = p->createPresetTree();
+            Ferrum8Processor::StepReroll off;
+            p->setStepReroll (5, off);
+            CHECK (p->getPattern (0).trig[5] == home.trig[5], "turning Orbit step variations off brings the original steps back");
+            p->applyPresetTree (tree);
+            CHECK (p->getStepReroll (5).every == 1 && std::abs (p->getStepReroll (5).amount - 0.5f) < 1e-4f, "step-variation settings are saved per channel");
+            p->setStepReroll (5, off);
+            p->setParamValue ("play", 0.f);
+            runBlocks (*p, 50, &ph);
+            p->setPlayHead (nullptr);
+        }
+    }
+
+    // ---- FX Morph: four scenes blended on an XY pad ------------------------------------------
+    {
+        namespace F = ferrum::fx;
+        F::FxRack r;
+        r.prepare (48000, 512);
+        std::array<F::RackState, 4> sc {};
+        std::array<bool, 4> used { true, true, false, false };
+        F::setSlot (sc[0].buses[0].lanes[0].slots[0], F::Type::Utility, { { "Gain", 6 } });
+        r.setMorphScenes (used, sc);
+        r.setMorphOn (true);
+        double ph = 0;
+        auto ratio = [&] (float x, float y)
+        {
+            r.setMorphXY (x, y);
+            std::vector<float> L (512), R (512);
+            double ein = 0, eout = 0;
+            for (int blk = 0; blk < 24; ++blk)
+            {
+                for (int i = 0; i < 512; ++i) { L[(size_t) i] = R[(size_t) i] = 0.25f * (float) std::sin (ph); ph += 2.0 * 3.14159265358979 * 1000.0 / 48000.0; }
+                std::vector<float> in = L;
+                r.process (0, L.data(), R.data(), 512);
+                if (blk >= 12) for (int i = 0; i < 512; ++i) { ein += in[(size_t) i] * in[(size_t) i]; eout += L[(size_t) i] * L[(size_t) i]; }
+            }
+            return std::sqrt (eout / ein);
+        };
+        const double a = ratio (0.f, 0.f), b = ratio (1.f, 0.f), mid = ratio (0.5f, 0.f), corner3 = ratio (0.f, 1.f);
+        std::printf ("     FX Morph, Utility +6 dB in scene 1 only: scene 1 %.3f, scene 2 %.3f, half way %.3f, empty corner 3 -> %.3f\n", a, b, mid, corner3);
+        CHECK (std::abs (a - 1.995) < 0.02 && std::abs (b - 1.0) < 0.01 && std::abs (mid - 1.5) < 0.02 && std::abs (corner3 - a) < 0.02,
+               "FX Morph fades a module in and out between scenes (an empty corner plays the nearest scene)");
+        F::setSlot (sc[1].buses[0].lanes[0].slots[0], F::Type::Utility, { { "Gain", -6 } });
+        r.setMorphScenes (used, sc);
+        const double q = ratio (0.25f, 0.f), h = ratio (0.5f, 0.f);
+        std::printf ("     FX Morph, +6 dB vs -6 dB: quarter way %.3f (+3 dB = 1.413), half way %.3f\n", q, h);
+        CHECK (std::abs (q - 1.413) < 0.02 && std::abs (h - 1.0) < 0.01, "FX Morph blends the settings of the same module");
+        r.setMorphOn (false);
+        CHECK (std::abs (ratio (0.f, 0.f) - 1.0) < 0.01, "with Morph off the rack plays its own (empty) setup");
+        r.collectGarbage();
+    }
+    {
+        auto p = std::make_unique<Ferrum8Processor>();
+        p->setRateAndBufferSizeDetails (48000, 512);
+        p->prepareToPlay (48000, 512);
+        p->loadKit (factoryKits()[0]);
+        namespace F = ferrum::fx;
+        p->storeFxScene (0);
+        auto st = p->getRack().getState();
+        st.buses[0] = {};
+        F::setSlot (st.buses[0].lanes[0].slots[0], F::Type::Utility, { { "Gain", 3 } });
+        p->getRack().setState (st);
+        p->storeFxScene (1);
+        p->setFxMorphOn (true);
+        p->getRack().setParam (0, 0, 0, 0, 0.9f);
+        p->fxRackEdited();
+        const bool followed = std::abs (p->getFxScene (1).buses[0].lanes[0].slots[0].p[0] - 0.9f) < 1e-6f;
+        CHECK (p->fxEditScene() == 1 && followed, "with FX Morph on, rack edits go into the edit scene");
+        const auto tree = p->createPresetTree();
+        p->clearFxScene (0); p->clearFxScene (1); p->setFxMorphOn (false);
+        p->applyPresetTree (tree);
+        CHECK (p->fxSceneUsed (0) && p->fxSceneUsed (1) && ! p->fxSceneUsed (2) && p->isFxMorphOn() && p->fxEditScene() == 1
+                   && std::abs (p->getFxScene (1).buses[0].lanes[0].slots[0].p[0] - 0.9f) < 1e-6f,
+               "FX Morph scenes are saved with the preset");
+        p->recallFxScene (0);
+        CHECK (p->getRack().moduleType (0, 0, 0) == p->getFxScene (0).buses[0].lanes[0].slots[0].type && p->fxEditScene() == 0, "Edit loads a scene into the rack");
+        // the processor plays the morph (host parameters FX Morph X / Y)
+        runBlocks (*p, 4, nullptr);
+        p->loadKit (factoryKits()[0]);
+        CHECK (! p->fxSceneUsed (0) && ! p->isFxMorphOn(), "a factory kit starts without FX Morph");
+        p->getRack().collectGarbage();
+        ui::LookAndFeel lnf;
+        p->storeFxScene (0);
+        p->storeFxScene (3);
+        p->setFxMorphOn (true);
+        p->setFxMorphXY (0.35f, 0.6f);
+        ui::FxMorphPanel fp (*p, {});
+        fp.setLookAndFeel (&lnf);
+        snapshot (fp, outDir.getChildFile ("ui_fx_morph.png"));
+        fp.setLookAndFeel (nullptr);
     }
 
     // ---- FX rack ---------------------------------------------------------------------------
@@ -1185,6 +1420,36 @@ int main (int argc, char** argv)
                 proc->sendUiChange();
                 pump (100);
                 snapshot (*ed, outDir.getChildFile ("ui_fx_overview.png"));
+                // round 4: a modulator tile dropped on a sound knob makes a route on that channel
+                {
+                    std::function<ui::Knob* (Component&)> findKnob = [&] (Component& c) -> ui::Knob*
+                    {
+                        if (auto* k = dynamic_cast<ui::Knob*> (&c)) if (k->onModDrop && k->getParameter() != nullptr) return k;
+                        for (auto* ch : c.getChildren()) if (auto* k = findKnob (*ch)) return k;
+                        return nullptr;
+                    };
+                    auto* k = findKnob (*ed);
+                    bool made = false;
+                    if (k != nullptr)
+                    {
+                        DragAndDropTarget::SourceDetails sd (var ("ferrum-mod:5"), nullptr, {});
+                        if (k->isInterestedInDragSource (sd)) k->itemDropped (sd);
+                        for (const auto& rt : proc->getMods()[5].routes)
+                            made |= rt.kind == mod::Route::Channel && rt.ch == proc->editorChannel && std::abs (rt.depth - 0.3f) < 1e-6f;
+                    }
+                    CHECK (made && proc->getMods()[5].type == mod::Type::LFO, "dropping a MOD tile on a knob adds a 30 % route (an empty slot becomes an LFO)");
+                    pump (60);
+                    snapshot (*ed, outDir.getChildFile ("ui_mod_strip.png"));
+                }
+                // round 4: the first-run tour (dice page, outputs page)
+                fe->showTutorial (1);
+                pump (60);
+                snapshot (*ed, outDir.getChildFile ("ui_tutorial_dice.png"));
+                fe->showTutorial (5);
+                pump (60);
+                snapshot (*ed, outDir.getChildFile ("ui_tutorial_outputs.png"));
+                CHECK (fe->tutorialShowing(), "Main menu > Show Tutorial opens the tour");
+                fe->showTutorial (0);
             }
         }
         ed.reset();
